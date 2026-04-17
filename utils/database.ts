@@ -7,9 +7,18 @@ export interface ObstacleRecord {
   latitude: number;
   longitude: number;
   createdAt: string;
-  userId: string;      // Firebase UID
-  userEmail: string;   // Google 이메일 (표시용)
-  displayName: string; // 표시 이름
+  userId: string;
+  userEmail: string;
+  displayName: string;
+  likes: number;
+  dislikes: number;
+}
+
+export interface TopContributor {
+  userId: string;
+  displayName: string;
+  userEmail: string;
+  totalLikes: number;
 }
 
 let db: SQLite.SQLiteDatabase | null = null;
@@ -17,7 +26,6 @@ let db: SQLite.SQLiteDatabase | null = null;
 export async function getDatabase(): Promise<SQLite.SQLiteDatabase> {
   if (!db) {
     db = await SQLite.openDatabaseAsync('obstacles.db');
-    // 기존 테이블이 없으면 새로 생성
     await db.execAsync(`
       CREATE TABLE IF NOT EXISTS obstacles (
         id          INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -27,19 +35,29 @@ export async function getDatabase(): Promise<SQLite.SQLiteDatabase> {
         createdAt   TEXT    NOT NULL,
         userId      TEXT    NOT NULL DEFAULT '',
         userEmail   TEXT    NOT NULL DEFAULT '',
-        displayName TEXT    NOT NULL DEFAULT ''
+        displayName TEXT    NOT NULL DEFAULT '',
+        likes       INTEGER NOT NULL DEFAULT 0,
+        dislikes    INTEGER NOT NULL DEFAULT 0
+      );
+      CREATE TABLE IF NOT EXISTS votes (
+        id          INTEGER PRIMARY KEY AUTOINCREMENT,
+        obstacleId  INTEGER NOT NULL,
+        userId      TEXT    NOT NULL,
+        voteType    TEXT    NOT NULL,
+        UNIQUE(obstacleId, userId)
       );
     `);
-    // 기존 테이블에 컬럼이 없으면 추가 (마이그레이션)
-    try {
-      await db.execAsync(`ALTER TABLE obstacles ADD COLUMN userId TEXT NOT NULL DEFAULT '';`);
-    } catch {}
-    try {
-      await db.execAsync(`ALTER TABLE obstacles ADD COLUMN userEmail TEXT NOT NULL DEFAULT '';`);
-    } catch {}
-    try {
-      await db.execAsync(`ALTER TABLE obstacles ADD COLUMN displayName TEXT NOT NULL DEFAULT '';`);
-    } catch {}
+    // 기존 테이블 마이그레이션
+    const migrations = [
+      `ALTER TABLE obstacles ADD COLUMN userId TEXT NOT NULL DEFAULT '';`,
+      `ALTER TABLE obstacles ADD COLUMN userEmail TEXT NOT NULL DEFAULT '';`,
+      `ALTER TABLE obstacles ADD COLUMN displayName TEXT NOT NULL DEFAULT '';`,
+      `ALTER TABLE obstacles ADD COLUMN likes INTEGER NOT NULL DEFAULT 0;`,
+      `ALTER TABLE obstacles ADD COLUMN dislikes INTEGER NOT NULL DEFAULT 0;`,
+    ];
+    for (const sql of migrations) {
+      try { await db.execAsync(sql); } catch {}
+    }
   }
   return db;
 }
@@ -54,11 +72,9 @@ export async function saveObstacle(
 ): Promise<number> {
   const database = await getDatabase();
 
-  // 영구 저장 폴더 생성 (이미 존재해도 안전하게 처리)
   const obstaclesDir = new Directory(Paths.document, 'obstacles');
   obstaclesDir.create({ idempotent: true });
 
-  // 파일 복사
   const fileName = `obstacle_${Date.now()}.jpg`;
   const destFile = new File(obstaclesDir, fileName);
   const srcFile = new File(tempUri);
@@ -84,16 +100,14 @@ export async function saveObstacle(
 
 export async function getAllObstacles(): Promise<ObstacleRecord[]> {
   const database = await getDatabase();
-  const rows = await database.getAllAsync<ObstacleRecord>(
+  return database.getAllAsync<ObstacleRecord>(
     'SELECT * FROM obstacles ORDER BY createdAt DESC'
   );
-  return rows;
 }
 
-// 지도 마커용: photoUri를 base64 data URL로 변환하여 반환
 export async function getAllObstaclesWithBase64(): Promise<(ObstacleRecord & { photoBase64: string })[]> {
   const rows = await getAllObstacles();
-  const result = await Promise.all(
+  return Promise.all(
     rows.map(async (row) => {
       try {
         const file = new File(row.photoUri);
@@ -104,7 +118,6 @@ export async function getAllObstaclesWithBase64(): Promise<(ObstacleRecord & { p
       }
     })
   );
-  return result;
 }
 
 export async function deleteObstacle(id: number): Promise<void> {
@@ -120,4 +133,108 @@ export async function deleteObstacle(id: number): Promise<void> {
     } catch {}
   }
   await database.runAsync('DELETE FROM obstacles WHERE id = ?', [id]);
+  await database.runAsync('DELETE FROM votes WHERE obstacleId = ?', [id]);
+}
+
+export async function getUserVote(
+  obstacleId: number,
+  userId: string
+): Promise<'like' | 'dislike' | null> {
+  const database = await getDatabase();
+  const row = await database.getFirstAsync<{ voteType: string }>(
+    'SELECT voteType FROM votes WHERE obstacleId = ? AND userId = ?',
+    [obstacleId, userId]
+  );
+  return (row?.voteType as 'like' | 'dislike') ?? null;
+}
+
+export async function castVote(
+  obstacleId: number,
+  userId: string,
+  voteType: 'like' | 'dislike'
+): Promise<{ likes: number; dislikes: number; userVote: 'like' | 'dislike' | null }> {
+  const database = await getDatabase();
+
+  const existing = await database.getFirstAsync<{ voteType: string }>(
+    'SELECT voteType FROM votes WHERE obstacleId = ? AND userId = ?',
+    [obstacleId, userId]
+  );
+
+  let newUserVote: 'like' | 'dislike' | null;
+
+  if (existing?.voteType === voteType) {
+    // 같은 버튼 재클릭 → 취소
+    await database.runAsync(
+      'DELETE FROM votes WHERE obstacleId = ? AND userId = ?',
+      [obstacleId, userId]
+    );
+    const col = voteType === 'like' ? 'likes' : 'dislikes';
+    await database.runAsync(
+      `UPDATE obstacles SET ${col} = MAX(0, ${col} - 1) WHERE id = ?`,
+      [obstacleId]
+    );
+    newUserVote = null;
+  } else if (existing) {
+    // 반대 버튼 클릭 → 교체
+    await database.runAsync(
+      'UPDATE votes SET voteType = ? WHERE obstacleId = ? AND userId = ?',
+      [voteType, obstacleId, userId]
+    );
+    if (voteType === 'like') {
+      await database.runAsync(
+        'UPDATE obstacles SET likes = likes + 1, dislikes = MAX(0, dislikes - 1) WHERE id = ?',
+        [obstacleId]
+      );
+    } else {
+      await database.runAsync(
+        'UPDATE obstacles SET dislikes = dislikes + 1, likes = MAX(0, likes - 1) WHERE id = ?',
+        [obstacleId]
+      );
+    }
+    newUserVote = voteType;
+  } else {
+    // 새 투표
+    await database.runAsync(
+      'INSERT INTO votes (obstacleId, userId, voteType) VALUES (?, ?, ?)',
+      [obstacleId, userId, voteType]
+    );
+    const col = voteType === 'like' ? 'likes' : 'dislikes';
+    await database.runAsync(
+      `UPDATE obstacles SET ${col} = ${col} + 1 WHERE id = ?`,
+      [obstacleId]
+    );
+    newUserVote = voteType;
+  }
+
+  const updated = await database.getFirstAsync<{ likes: number; dislikes: number }>(
+    'SELECT likes, dislikes FROM obstacles WHERE id = ?',
+    [obstacleId]
+  );
+
+  return {
+    likes: updated?.likes ?? 0,
+    dislikes: updated?.dislikes ?? 0,
+    userVote: newUserVote,
+  };
+}
+
+export async function getMyObstacles(userId: string): Promise<ObstacleRecord[]> {
+  const database = await getDatabase();
+  return database.getAllAsync<ObstacleRecord>(
+    'SELECT * FROM obstacles WHERE userId = ? ORDER BY createdAt DESC',
+    [userId]
+  );
+}
+
+export async function getTopContributors(limit: number = 3): Promise<TopContributor[]> {
+  const database = await getDatabase();
+  return database.getAllAsync<TopContributor>(
+    `SELECT userId, displayName, userEmail, SUM(likes) as totalLikes
+     FROM obstacles
+     WHERE userId != ''
+     GROUP BY userId
+     ORDER BY totalLikes DESC
+     LIMIT ?`,
+    [limit]
+  );
 }

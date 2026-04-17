@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import {
   View,
   Text,
@@ -8,78 +8,47 @@ import {
   ActivityIndicator,
   Alert,
   ScrollView,
+  Switch,
 } from 'react-native';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import * as WebBrowser from 'expo-web-browser';
-import * as AuthSession from 'expo-auth-session';
-import {
-  GoogleAuthProvider,
-  signInWithCredential,
-} from 'firebase/auth';
+import { GoogleSignin, statusCodes } from '@react-native-google-signin/google-signin';
+import { GoogleAuthProvider, signInWithCredential } from 'firebase/auth';
 import { MaterialIcons } from '@expo/vector-icons';
 import { useAuth } from '../context/AuthContext';
 import { auth } from '../utils/firebase';
 
-// expo-auth-session이 웹 브라우저를 올바르게 닫도록 등록
-WebBrowser.maybeCompleteAuthSession();
-
-// ─────────────────────────────────────────────────────────────────
-//  Google OAuth 클라이언트 ID
-//  Google Cloud Console > API 및 서비스 > 사용자 인증 정보에서 발급
-//  Android 앱용 OAuth 2.0 클라이언트 ID 입력 (패키지명: com.anonymous.MyApp)
-// ─────────────────────────────────────────────────────────────────
-const GOOGLE_CLIENT_ID = '101038938383-e37ac02m8qn1fehmoo79tun7k0gt8r9e.apps.googleusercontent.com';
-// ─────────────────────────────────────────────────────────────────
-
-const discovery = {
-  authorizationEndpoint: 'https://accounts.google.com/o/oauth2/v2/auth',
-  tokenEndpoint: 'https://oauth2.googleapis.com/token',
-};
 
 export default function MyPageScreen() {
   const { user, logout } = useAuth();
   const [loading, setLoading] = useState(false);
+  const [muteShutter, setMuteShutter] = useState(false);
 
-  // Expo Auth Session 설정
-  const redirectUri = AuthSession.makeRedirectUri();
+  useEffect(() => {
+    AsyncStorage.getItem('settings.muteShutter').then((val) => {
+      if (val !== null) setMuteShutter(val === 'true');
+    });
+  }, []);
 
-  const [request, , promptAsync] = AuthSession.useAuthRequest(
-    {
-      clientId: GOOGLE_CLIENT_ID,
-      scopes: ['openid', 'profile', 'email'],
-      redirectUri,
-    },
-    discovery
-  );
+  const toggleMuteShutter = (value: boolean) => {
+    setMuteShutter(value);
+    AsyncStorage.setItem('settings.muteShutter', String(value));
+  };
 
   // Google 로그인 처리
   const handleGoogleLogin = async () => {
     setLoading(true);
     try {
-      const result = await promptAsync();
-      if (result.type === 'success' && result.params.code) {
-        // Authorization Code → Token 교환
-        const tokenResponse = await AuthSession.exchangeCodeAsync(
-          {
-            clientId: GOOGLE_CLIENT_ID,
-            code: result.params.code,
-            redirectUri,
-            extraParams: { code_verifier: request?.codeVerifier ?? '' },
-          },
-          discovery
-        );
-
-        // Firebase credential 생성 후 로그인
-        const credential = GoogleAuthProvider.credential(
-          tokenResponse.idToken ?? null,
-          tokenResponse.accessToken
-        );
-        await signInWithCredential(auth, credential);
-      } else if (result.type === 'error') {
-        Alert.alert('로그인 오류', result.error?.message ?? '알 수 없는 오류');
-      }
+      await GoogleSignin.hasPlayServices();
+      const userInfo = await GoogleSignin.signIn();
+      const idToken = userInfo.data?.idToken;
+      if (!idToken) throw new Error('ID 토큰을 받지 못했습니다.');
+      const credential = GoogleAuthProvider.credential(idToken);
+      await signInWithCredential(auth, credential);
     } catch (e: any) {
-      Alert.alert('로그인 실패', e.message ?? '오류가 발생했습니다.');
+      if (e.code !== statusCodes.SIGN_IN_CANCELLED) {
+        Alert.alert('로그인 실패', e.message ?? '오류가 발생했습니다.');
+      }
     } finally {
       setLoading(false);
     }
@@ -116,10 +85,10 @@ export default function MyPageScreen() {
           </View>
 
           <TouchableOpacity
-            style={[styles.googleButton, (!request || loading) && styles.buttonDisabled]}
+            style={[styles.googleButton, loading && styles.buttonDisabled]}
             onPress={handleGoogleLogin}
             activeOpacity={0.85}
-            disabled={!request || loading}
+            disabled={loading}
           >
             {loading ? (
               <ActivityIndicator color="#444" size="small" />
@@ -137,6 +106,24 @@ export default function MyPageScreen() {
           <Text style={styles.termsText}>
             로그인 시 서비스 이용약관 및 개인정보처리방침에 동의합니다.
           </Text>
+        </View>
+
+        {/* 설정 섹션 */}
+        <View style={styles.settingsSection}>
+          <Text style={styles.settingsSectionTitle}>설정</Text>
+          <View style={styles.settingRow}>
+            <MaterialIcons name="volume-off" size={20} color="#555" />
+            <View style={styles.settingTextWrap}>
+              <Text style={styles.settingLabel}>카메라 셔터음 끄기</Text>
+              <Text style={styles.settingDesc}>촬영 시 소리가 나지 않습니다</Text>
+            </View>
+            <Switch
+              value={muteShutter}
+              onValueChange={toggleMuteShutter}
+              trackColor={{ false: '#ddd', true: '#4285F4' }}
+              thumbColor="#fff"
+            />
+          </View>
         </View>
       </SafeAreaView>
     );
@@ -191,6 +178,24 @@ export default function MyPageScreen() {
               <Text style={styles.infoLabel}>로그인 방법</Text>
               <Text style={styles.infoValue}>Google</Text>
             </View>
+          </View>
+        </View>
+
+        {/* 설정 섹션 */}
+        <View style={styles.settingsSection}>
+          <Text style={styles.settingsSectionTitle}>설정</Text>
+          <View style={styles.settingRow}>
+            <MaterialIcons name="volume-off" size={20} color="#555" />
+            <View style={styles.settingTextWrap}>
+              <Text style={styles.settingLabel}>카메라 셔터음 끄기</Text>
+              <Text style={styles.settingDesc}>촬영 시 소리가 나지 않습니다</Text>
+            </View>
+            <Switch
+              value={muteShutter}
+              onValueChange={toggleMuteShutter}
+              trackColor={{ false: '#ddd', true: '#4285F4' }}
+              thumbColor="#fff"
+            />
           </View>
         </View>
 
@@ -370,5 +375,44 @@ const styles = StyleSheet.create({
     fontSize: 15,
     fontWeight: '600',
     color: '#e53935',
+  },
+  settingsSection: {
+    backgroundColor: '#fff',
+    borderRadius: 16,
+    marginHorizontal: 16,
+    marginTop: 16,
+    padding: 16,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 1 },
+    shadowOpacity: 0.06,
+    shadowRadius: 3,
+    elevation: 2,
+  },
+  settingsSectionTitle: {
+    fontSize: 13,
+    fontWeight: '600',
+    color: '#999',
+    marginBottom: 8,
+    textTransform: 'uppercase',
+    letterSpacing: 0.5,
+  },
+  settingRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingVertical: 8,
+    gap: 12,
+  },
+  settingTextWrap: {
+    flex: 1,
+  },
+  settingLabel: {
+    fontSize: 15,
+    color: '#333',
+    fontWeight: '500',
+  },
+  settingDesc: {
+    fontSize: 12,
+    color: '#aaa',
+    marginTop: 2,
   },
 });

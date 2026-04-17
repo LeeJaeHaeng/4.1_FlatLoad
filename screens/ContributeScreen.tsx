@@ -1,4 +1,4 @@
-import React, { useState, useRef } from 'react';
+import React, { useState, useRef, useEffect, useCallback } from 'react';
 import {
   View,
   Text,
@@ -8,25 +8,72 @@ import {
   Alert,
   ActivityIndicator,
   SafeAreaView,
+  ScrollView,
+  FlatList,
 } from 'react-native';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import { CameraView, CameraType, useCameraPermissions } from 'expo-camera';
 import { MaterialIcons } from '@expo/vector-icons';
 import * as Location from 'expo-location';
-import { saveObstacle } from '../utils/database';
+import { useFocusEffect } from '@react-navigation/native';
+import {
+  saveObstacle,
+  getMyObstacles,
+  getTopContributors,
+  ObstacleRecord,
+  TopContributor,
+} from '../utils/database';
 import { useAuth } from '../context/AuthContext';
 
-type Screen = 'menu' | 'camera' | 'preview';
+type Screen = 'list' | 'camera' | 'preview';
+
+const MEDAL = ['🥇', '🥈', '🥉'];
 
 export default function ContributeScreen() {
   const { user } = useAuth();
-  const [screen, setScreen] = useState<Screen>('menu');
+  const [screen, setScreen] = useState<Screen>('list');
   const [cameraPermission, requestCameraPermission] = useCameraPermissions();
   const [facing, setFacing] = useState<CameraType>('back');
+  const [muted, setMuted] = useState(false);
   const [capturedUri, setCapturedUri] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
   const cameraRef = useRef<CameraView>(null);
 
-  // 카메라 화면 진입 시 권한 요청
+  const [myObstacles, setMyObstacles] = useState<ObstacleRecord[]>([]);
+  const [topContributors, setTopContributors] = useState<TopContributor[]>([]);
+  const [listLoading, setListLoading] = useState(true);
+
+  useEffect(() => {
+    AsyncStorage.getItem('settings.muteShutter').then((val) => {
+      if (val !== null) setMuted(val === 'true');
+    });
+  }, []);
+
+  const toggleMuted = (value: boolean) => {
+    setMuted(value);
+    AsyncStorage.setItem('settings.muteShutter', String(value));
+  };
+
+  const loadListData = useCallback(async () => {
+    setListLoading(true);
+    try {
+      const [obstacles, top] = await Promise.all([
+        user ? getMyObstacles(user.uid) : Promise.resolve([]),
+        getTopContributors(3),
+      ]);
+      setMyObstacles(obstacles);
+      setTopContributors(top);
+    } finally {
+      setListLoading(false);
+    }
+  }, [user]);
+
+  useFocusEffect(
+    useCallback(() => {
+      if (screen === 'list') loadListData();
+    }, [screen, loadListData])
+  );
+
   const enterCamera = async () => {
     if (!cameraPermission?.granted) {
       const result = await requestCameraPermission();
@@ -55,7 +102,6 @@ export default function ContributeScreen() {
     if (!capturedUri) return;
     setSaving(true);
     try {
-      // 위치 권한 확인 및 취득
       const { status } = await Location.requestForegroundPermissionsAsync();
       if (status !== 'granted') {
         Alert.alert('권한 필요', '위치 접근 권한이 필요합니다.');
@@ -63,15 +109,9 @@ export default function ContributeScreen() {
         return;
       }
 
-      // 마지막 알려진 위치를 먼저 시도 (빠름), 없으면 현재 위치 측정
-      let loc = await Location.getLastKnownPositionAsync({
-        maxAge: 60_000,
-        requiredAccuracy: 100,
-      });
+      let loc = await Location.getLastKnownPositionAsync({ maxAge: 60_000, requiredAccuracy: 100 });
       if (!loc) {
-        loc = await Location.getCurrentPositionAsync({
-          accuracy: Location.Accuracy.Balanced,
-        });
+        loc = await Location.getCurrentPositionAsync({ accuracy: Location.Accuracy.Balanced });
       }
 
       await saveObstacle(
@@ -88,12 +128,12 @@ export default function ContributeScreen() {
           text: '확인',
           onPress: () => {
             setCapturedUri(null);
-            setScreen('menu');
+            setScreen('list');
+            loadListData();
           },
         },
       ]);
     } catch (e) {
-      console.error('[ContributeScreen] 저장 오류:', e);
       Alert.alert('오류', `저장 중 문제가 발생했습니다.\n${(e as Error)?.message ?? String(e)}`);
     } finally {
       setSaving(false);
@@ -102,36 +142,86 @@ export default function ContributeScreen() {
 
   const handleCancel = () => {
     setCapturedUri(null);
-    setScreen('menu');
+    setScreen('list');
   };
 
-  // 메인 메뉴
-  if (screen === 'menu') {
+  // ── 목록 화면 ───────────────────────────────────────────────────
+  if (screen === 'list') {
     return (
       <SafeAreaView style={styles.container}>
-        <View style={styles.header}>
-          <MaterialIcons name="edit-location-alt" size={36} color="#FF5722" />
-          <Text style={styles.headerTitle}>기여하기</Text>
-          <Text style={styles.headerSub}>장애물을 발견했나요? 사진으로 기록해 주세요.</Text>
-        </View>
+        <ScrollView contentContainerStyle={styles.listScroll}>
 
-        <View style={styles.menuList}>
-          <TouchableOpacity style={styles.menuItem} onPress={enterCamera} activeOpacity={0.8}>
-            <View style={styles.menuIconWrap}>
-              <MaterialIcons name="camera-alt" size={28} color="#fff" />
+          {/* Top 3 리더보드 */}
+          <View style={styles.leaderCard}>
+            <Text style={styles.leaderTitle}>👍 좋아요 TOP 3</Text>
+            {topContributors.length === 0 ? (
+              <Text style={styles.leaderEmpty}>아직 평가된 기여가 없습니다</Text>
+            ) : (
+              topContributors.map((c, i) => (
+                <View key={c.userId} style={styles.leaderRow}>
+                  <Text style={styles.leaderMedal}>{MEDAL[i]}</Text>
+                  <View style={styles.leaderInfo}>
+                    <Text style={styles.leaderName}>{c.displayName || c.userEmail || '익명'}</Text>
+                    <Text style={styles.leaderEmail}>{c.userEmail}</Text>
+                  </View>
+                  <View style={styles.leaderLikes}>
+                    <MaterialIcons name="thumb-up" size={14} color="#4285F4" />
+                    <Text style={styles.leaderLikeCount}>{c.totalLikes}</Text>
+                  </View>
+                </View>
+              ))
+            )}
+          </View>
+
+          {/* 내 기여 목록 */}
+          <Text style={styles.sectionTitle}>내 기여 목록</Text>
+          {!user ? (
+            <View style={styles.loginPrompt}>
+              <MaterialIcons name="account-circle" size={40} color="#ccc" />
+              <Text style={styles.loginPromptText}>로그인하면 내 기여 목록을 볼 수 있습니다</Text>
             </View>
-            <View style={styles.menuTextWrap}>
-              <Text style={styles.menuTitle}>카메라 촬영하기</Text>
-              <Text style={styles.menuDesc}>카메라로 장애물을 직접 촬영합니다</Text>
+          ) : listLoading ? (
+            <ActivityIndicator color="#4285F4" style={{ marginTop: 24 }} />
+          ) : myObstacles.length === 0 ? (
+            <View style={styles.emptyWrap}>
+              <MaterialIcons name="add-location-alt" size={40} color="#ccc" />
+              <Text style={styles.emptyText}>아직 기여한 장애물이 없습니다</Text>
             </View>
-            <MaterialIcons name="chevron-right" size={24} color="#ccc" />
-          </TouchableOpacity>
-        </View>
+          ) : (
+            myObstacles.map((item) => (
+              <View key={item.id} style={styles.obstacleItem}>
+                <Image source={{ uri: item.photoUri }} style={styles.obstacleThumb} />
+                <View style={styles.obstacleInfo}>
+                  <Text style={styles.obstacleDate}>
+                    {new Date(item.createdAt).toLocaleDateString('ko-KR', {
+                      year: 'numeric', month: 'long', day: 'numeric',
+                    })}
+                  </Text>
+                  <Text style={styles.obstacleCoords}>
+                    {item.latitude.toFixed(5)}, {item.longitude.toFixed(5)}
+                  </Text>
+                  <View style={styles.obstacleVotes}>
+                    <MaterialIcons name="thumb-up" size={13} color="#4285F4" />
+                    <Text style={styles.obstacleVoteText}>{item.likes}</Text>
+                    <MaterialIcons name="thumb-down" size={13} color="#e53935" style={{ marginLeft: 8 }} />
+                    <Text style={styles.obstacleVoteText}>{item.dislikes}</Text>
+                  </View>
+                </View>
+              </View>
+            ))
+          )}
+        </ScrollView>
+
+        {/* 촬영 FAB */}
+        <TouchableOpacity style={styles.fab} onPress={enterCamera} activeOpacity={0.85}>
+          <MaterialIcons name="camera-alt" size={26} color="#fff" />
+          <Text style={styles.fabText}>촬영하기</Text>
+        </TouchableOpacity>
       </SafeAreaView>
     );
   }
 
-  // 카메라 화면
+  // ── 카메라 화면 ─────────────────────────────────────────────────
   if (screen === 'camera') {
     return (
       <View style={styles.fullScreen}>
@@ -139,28 +229,31 @@ export default function ContributeScreen() {
           ref={cameraRef}
           style={StyleSheet.absoluteFill}
           facing={facing}
+          mute={muted}
         />
 
-        {/* 상단 닫기 버튼 */}
         <SafeAreaView style={styles.cameraTopBar}>
-          <TouchableOpacity onPress={() => setScreen('menu')} style={styles.cameraTopBtn}>
+          <TouchableOpacity onPress={() => setScreen('list')} style={styles.cameraTopBtn}>
             <MaterialIcons name="close" size={28} color="#fff" />
           </TouchableOpacity>
           <Text style={styles.cameraTopTitle}>장애물 촬영</Text>
-          <TouchableOpacity
-            onPress={() => setFacing(f => (f === 'back' ? 'front' : 'back'))}
-            style={styles.cameraTopBtn}
-          >
-            <MaterialIcons name="flip-camera-ios" size={28} color="#fff" />
-          </TouchableOpacity>
+          <View style={styles.cameraTopRight}>
+            <TouchableOpacity onPress={() => toggleMuted(!muted)} style={styles.cameraTopBtn}>
+              <MaterialIcons name={muted ? 'volume-off' : 'volume-up'} size={24} color="#fff" />
+            </TouchableOpacity>
+            <TouchableOpacity
+              onPress={() => setFacing(f => (f === 'back' ? 'front' : 'back'))}
+              style={styles.cameraTopBtn}
+            >
+              <MaterialIcons name="flip-camera-ios" size={28} color="#fff" />
+            </TouchableOpacity>
+          </View>
         </SafeAreaView>
 
-        {/* 촬영 가이드 */}
         <View style={styles.cameraGuide}>
           <Text style={styles.cameraGuideText}>장애물이 화면 중앙에 오도록 맞춰주세요</Text>
         </View>
 
-        {/* 하단 촬영 버튼 */}
         <View style={styles.cameraBottomBar}>
           <TouchableOpacity style={styles.shutterButton} onPress={takePicture} activeOpacity={0.8}>
             <View style={styles.shutterInner} />
@@ -170,20 +263,16 @@ export default function ContributeScreen() {
     );
   }
 
-  // 미리보기 화면
+  // ── 미리보기 화면 ───────────────────────────────────────────────
   return (
     <View style={styles.fullScreen}>
       {capturedUri && (
         <Image source={{ uri: capturedUri }} style={StyleSheet.absoluteFill} resizeMode="cover" />
       )}
-
-      {/* 어두운 오버레이 */}
       <View style={styles.previewOverlay} />
-
       <SafeAreaView style={styles.previewContent}>
         <Text style={styles.previewTitle}>촬영된 사진</Text>
         <Text style={styles.previewSub}>이 사진을 저장하시겠습니까?{'\n'}저장 시 현재 위치와 날짜가 함께 기록됩니다.</Text>
-
         <View style={styles.previewButtons}>
           <TouchableOpacity
             style={[styles.previewBtn, styles.cancelBtn]}
@@ -193,7 +282,6 @@ export default function ContributeScreen() {
             <MaterialIcons name="close" size={20} color="#fff" />
             <Text style={styles.previewBtnText}>취소</Text>
           </TouchableOpacity>
-
           <TouchableOpacity
             style={[styles.previewBtn, styles.saveBtn]}
             onPress={handleSave}
@@ -215,74 +303,95 @@ export default function ContributeScreen() {
 }
 
 const styles = StyleSheet.create({
-  container: {
-    flex: 1,
-    backgroundColor: '#f8f9fa',
-  },
-  header: {
-    alignItems: 'center',
-    paddingTop: 48,
-    paddingBottom: 32,
-    paddingHorizontal: 24,
-    backgroundColor: '#fff',
-    borderBottomWidth: 1,
-    borderBottomColor: '#eee',
-  },
-  headerTitle: {
-    fontSize: 24,
-    fontWeight: 'bold',
-    color: '#222',
-    marginTop: 8,
-  },
-  headerSub: {
-    marginTop: 6,
-    fontSize: 14,
-    color: '#888',
-    textAlign: 'center',
-  },
-  menuList: {
-    marginTop: 20,
-    marginHorizontal: 16,
-    gap: 12,
-  },
-  menuItem: {
-    flexDirection: 'row',
-    alignItems: 'center',
+  container: { flex: 1, backgroundColor: '#f8f9fa' },
+  listScroll: { padding: 16, paddingBottom: 100 },
+
+  // 리더보드
+  leaderCard: {
     backgroundColor: '#fff',
     borderRadius: 16,
     padding: 16,
+    marginBottom: 20,
     shadowColor: '#000',
     shadowOffset: { width: 0, height: 1 },
     shadowOpacity: 0.08,
     shadowRadius: 4,
     elevation: 2,
-    gap: 14,
   },
-  menuIconWrap: {
-    width: 52,
-    height: 52,
-    borderRadius: 14,
-    backgroundColor: '#FF5722',
-    justifyContent: 'center',
-    alignItems: 'center',
-  },
-  menuTextWrap: {
-    flex: 1,
-  },
-  menuTitle: {
+  leaderTitle: {
     fontSize: 16,
-    fontWeight: '600',
+    fontWeight: 'bold',
     color: '#222',
+    marginBottom: 12,
   },
-  menuDesc: {
-    fontSize: 12,
-    color: '#999',
-    marginTop: 2,
+  leaderEmpty: { fontSize: 13, color: '#bbb', textAlign: 'center', paddingVertical: 8 },
+  leaderRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingVertical: 8,
+    borderBottomWidth: 1,
+    borderBottomColor: '#f5f5f5',
+    gap: 10,
   },
-  fullScreen: {
-    flex: 1,
-    backgroundColor: '#000',
+  leaderMedal: { fontSize: 24, width: 32, textAlign: 'center' },
+  leaderInfo: { flex: 1 },
+  leaderName: { fontSize: 14, fontWeight: '600', color: '#333' },
+  leaderEmail: { fontSize: 11, color: '#aaa', marginTop: 1 },
+  leaderLikes: { flexDirection: 'row', alignItems: 'center', gap: 4 },
+  leaderLikeCount: { fontSize: 15, fontWeight: 'bold', color: '#4285F4' },
+
+  // 내 기여 목록
+  sectionTitle: {
+    fontSize: 15,
+    fontWeight: 'bold',
+    color: '#333',
+    marginBottom: 10,
   },
+  loginPrompt: { alignItems: 'center', paddingVertical: 32, gap: 8 },
+  loginPromptText: { fontSize: 13, color: '#aaa', textAlign: 'center' },
+  emptyWrap: { alignItems: 'center', paddingVertical: 32, gap: 8 },
+  emptyText: { fontSize: 13, color: '#aaa' },
+  obstacleItem: {
+    flexDirection: 'row',
+    backgroundColor: '#fff',
+    borderRadius: 14,
+    marginBottom: 10,
+    overflow: 'hidden',
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 1 },
+    shadowOpacity: 0.06,
+    shadowRadius: 3,
+    elevation: 2,
+  },
+  obstacleThumb: { width: 90, height: 90, backgroundColor: '#eee' },
+  obstacleInfo: { flex: 1, padding: 12, justifyContent: 'center', gap: 4 },
+  obstacleDate: { fontSize: 13, fontWeight: '600', color: '#333' },
+  obstacleCoords: { fontSize: 11, color: '#999' },
+  obstacleVotes: { flexDirection: 'row', alignItems: 'center', gap: 4, marginTop: 4 },
+  obstacleVoteText: { fontSize: 12, color: '#555', fontWeight: '600' },
+
+  // FAB
+  fab: {
+    position: 'absolute',
+    bottom: 24,
+    right: 16,
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#FF5722',
+    paddingHorizontal: 20,
+    paddingVertical: 14,
+    borderRadius: 30,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.3,
+    shadowRadius: 4,
+    elevation: 6,
+    gap: 8,
+  },
+  fabText: { color: '#fff', fontWeight: 'bold', fontSize: 15 },
+
+  // 카메라
+  fullScreen: { flex: 1, backgroundColor: '#000' },
   cameraTopBar: {
     flexDirection: 'row',
     justifyContent: 'space-between',
@@ -291,17 +400,9 @@ const styles = StyleSheet.create({
     paddingTop: 8,
     paddingBottom: 8,
   },
-  cameraTopBtn: {
-    width: 44,
-    height: 44,
-    justifyContent: 'center',
-    alignItems: 'center',
-  },
-  cameraTopTitle: {
-    color: '#fff',
-    fontSize: 17,
-    fontWeight: '600',
-  },
+  cameraTopBtn: { width: 44, height: 44, justifyContent: 'center', alignItems: 'center' },
+  cameraTopTitle: { color: '#fff', fontSize: 17, fontWeight: '600' },
+  cameraTopRight: { flexDirection: 'row', alignItems: 'center' },
   cameraGuide: {
     position: 'absolute',
     bottom: 140,
@@ -334,29 +435,17 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     alignItems: 'center',
   },
-  shutterInner: {
-    width: 56,
-    height: 56,
-    borderRadius: 28,
-    backgroundColor: '#fff',
-  },
-  previewOverlay: {
-    ...StyleSheet.absoluteFillObject,
-    backgroundColor: 'rgba(0,0,0,0.45)',
-  },
+  shutterInner: { width: 56, height: 56, borderRadius: 28, backgroundColor: '#fff' },
+
+  // 미리보기
+  previewOverlay: { ...StyleSheet.absoluteFillObject, backgroundColor: 'rgba(0,0,0,0.45)' },
   previewContent: {
     flex: 1,
     justifyContent: 'flex-end',
     paddingHorizontal: 24,
     paddingBottom: 48,
   },
-  previewTitle: {
-    color: '#fff',
-    fontSize: 22,
-    fontWeight: 'bold',
-    textAlign: 'center',
-    marginBottom: 8,
-  },
+  previewTitle: { color: '#fff', fontSize: 22, fontWeight: 'bold', textAlign: 'center', marginBottom: 8 },
   previewSub: {
     color: 'rgba(255,255,255,0.75)',
     fontSize: 14,
@@ -364,10 +453,7 @@ const styles = StyleSheet.create({
     marginBottom: 28,
     lineHeight: 22,
   },
-  previewButtons: {
-    flexDirection: 'row',
-    gap: 12,
-  },
+  previewButtons: { flexDirection: 'row', gap: 12 },
   previewBtn: {
     flex: 1,
     flexDirection: 'row',
@@ -377,17 +463,7 @@ const styles = StyleSheet.create({
     borderRadius: 14,
     gap: 8,
   },
-  cancelBtn: {
-    backgroundColor: 'rgba(255,255,255,0.2)',
-    borderWidth: 1,
-    borderColor: 'rgba(255,255,255,0.4)',
-  },
-  saveBtn: {
-    backgroundColor: '#FF5722',
-  },
-  previewBtnText: {
-    color: '#fff',
-    fontWeight: 'bold',
-    fontSize: 16,
-  },
+  cancelBtn: { backgroundColor: 'rgba(255,255,255,0.2)', borderWidth: 1, borderColor: 'rgba(255,255,255,0.4)' },
+  saveBtn: { backgroundColor: '#FF5722' },
+  previewBtnText: { color: '#fff', fontWeight: 'bold', fontSize: 16 },
 });

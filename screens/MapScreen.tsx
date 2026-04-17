@@ -4,7 +4,8 @@ import { WebView } from 'react-native-webview';
 import { MaterialIcons } from '@expo/vector-icons';
 import * as Location from 'expo-location';
 import { useFocusEffect } from '@react-navigation/native';
-import { getAllObstaclesWithBase64, ObstacleRecord } from '../utils/database';
+import { getAllObstaclesWithBase64, ObstacleRecord, castVote, getUserVote } from '../utils/database';
+import { useAuth } from '../context/AuthContext';
 
 const DEFAULT_LAT = 37.5665;
 const DEFAULT_LNG = 126.9780;
@@ -40,12 +41,29 @@ function buildMapHTML(lat: number, lng: number): string {
     }).addTo(map);
 
     var accuracyCircle = null;
-    var marker = L.circleMarker([${lat}, ${lng}], {
-      radius: 10,
-      fillColor: '#4285F4',
-      color: '#ffffff',
-      weight: 3,
-      fillOpacity: 1
+    var currentHeading = 0;
+    var hasHeading = false;
+
+    function buildLocationIcon(heading, showHeading) {
+      var svg = '<svg width="80" height="80" viewBox="0 0 80 80" xmlns="http://www.w3.org/2000/svg">';
+      if (showHeading) {
+        svg += '<g transform="rotate(' + heading + ', 40, 40)">'
+          + '<path d="M40,40 L23,10 A 30 30 0 0 1 57,10 Z" fill="rgba(66,133,244,0.25)" stroke="rgba(66,133,244,0.6)" stroke-width="1" stroke-linejoin="round"/>'
+          + '</g>';
+      }
+      svg += '<circle cx="40" cy="40" r="10" fill="#4285F4" stroke="white" stroke-width="3"/>'
+        + '</svg>';
+      return L.divIcon({
+        html: svg,
+        className: '',
+        iconSize: [80, 80],
+        iconAnchor: [40, 40]
+      });
+    }
+
+    var marker = L.marker([${lat}, ${lng}], {
+      icon: buildLocationIcon(0, false),
+      zIndexOffset: 1000
     }).addTo(map);
 
     var obstacleMarkers = {};
@@ -64,6 +82,12 @@ function buildMapHTML(lat: number, lng: number): string {
           weight: 1
         }).addTo(map);
       }
+    }
+
+    function updateHeading(heading) {
+      currentHeading = heading;
+      hasHeading = true;
+      marker.setIcon(buildLocationIcon(currentHeading, true));
     }
 
     function flyToLocation(lat, lng) {
@@ -123,6 +147,8 @@ function buildMapHTML(lat: number, lng: number): string {
         var msg = JSON.parse(data);
         if (msg.type === 'updateLocation') {
           updateLocation(msg.lat, msg.lng, msg.accuracy);
+        } else if (msg.type === 'updateHeading') {
+          updateHeading(msg.heading);
         } else if (msg.type === 'flyTo') {
           flyToLocation(msg.lat, msg.lng);
         } else if (msg.type === 'setObstacles') {
@@ -139,16 +165,20 @@ function buildMapHTML(lat: number, lng: number): string {
 }
 
 export default function MapScreen({ navigation }: any) {
+  const { user } = useAuth();
   const [location, setLocation] = useState<{ lat: number; lng: number; accuracy?: number } | null>(null);
+  const [heading, setHeading] = useState<number | null>(null);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [mapReady, setMapReady] = useState(false);
   const [obstacles, setObstacles] = useState<(ObstacleRecord & { photoBase64: string })[]>([]);
   const [selectedObstacle, setSelectedObstacle] = useState<ObstacleRecord | null>(null);
+  const [voteState, setVoteState] = useState<{ likes: number; dislikes: number; userVote: 'like' | 'dislike' | null } | null>(null);
   const webViewRef = useRef<WebView>(null);
 
   useEffect(() => {
-    let subscription: Location.LocationSubscription | null = null;
+    let posSubscription: Location.LocationSubscription | null = null;
+    let headingSubscription: Location.LocationSubscription | null = null;
 
     (async () => {
       const { status } = await Location.requestForegroundPermissionsAsync();
@@ -177,7 +207,7 @@ export default function MapScreen({ navigation }: any) {
       }
 
       // 고정밀 위치 지속 추적
-      subscription = await Location.watchPositionAsync(
+      posSubscription = await Location.watchPositionAsync(
         {
           accuracy: Location.Accuracy.High,
           timeInterval: 3000,
@@ -191,10 +221,21 @@ export default function MapScreen({ navigation }: any) {
           });
         }
       );
+
+      // 나침반 방향 추적
+      try {
+        headingSubscription = await Location.watchHeadingAsync((h) => {
+          const deg = h.trueHeading >= 0 ? h.trueHeading : h.magHeading;
+          setHeading(deg);
+        });
+      } catch {
+        // 나침반 미지원 기기에서는 방향 표시 없이 동작
+      }
     })();
 
     return () => {
-      subscription?.remove();
+      posSubscription?.remove();
+      headingSubscription?.remove();
     };
   }, []);
 
@@ -205,6 +246,34 @@ export default function MapScreen({ navigation }: any) {
     }, [])
   );
 
+  // 모달 열릴 때 투표 데이터 로드
+  useEffect(() => {
+    if (!selectedObstacle) { setVoteState(null); return; }
+    const userId = user?.uid ?? '';
+    Promise.all([
+      getUserVote(selectedObstacle.id, userId),
+    ]).then(([userVote]) => {
+      setVoteState({
+        likes: selectedObstacle.likes,
+        dislikes: selectedObstacle.dislikes,
+        userVote,
+      });
+    });
+  }, [selectedObstacle, user]);
+
+  const handleVote = async (voteType: 'like' | 'dislike') => {
+    if (!selectedObstacle || !user) return;
+    const result = await castVote(selectedObstacle.id, user.uid, voteType);
+    setVoteState(result);
+    // 로컬 obstacles 목록도 업데이트
+    setObstacles(prev =>
+      prev.map(o => o.id === selectedObstacle.id
+        ? { ...o, likes: result.likes, dislikes: result.dislikes }
+        : o
+      )
+    );
+  };
+
   // WebView에 위치 업데이트 전송
   useEffect(() => {
     if (!mapReady || !location) return;
@@ -213,6 +282,15 @@ export default function MapScreen({ navigation }: any) {
       true;
     `);
   }, [location, mapReady]);
+
+  // WebView에 방향 업데이트 전송
+  useEffect(() => {
+    if (!mapReady || heading === null) return;
+    webViewRef.current?.injectJavaScript(`
+      updateHeading(${heading});
+      true;
+    `);
+  }, [heading, mapReady]);
 
   // WebView에 장애물 마커 전송
   useEffect(() => {
@@ -338,6 +416,32 @@ export default function MapScreen({ navigation }: any) {
                     : selectedObstacle.userEmail || '익명'}
                 </Text>
               </View>
+              {/* 좋아요 / 싫어요 */}
+              <View style={styles.voteRow}>
+                <TouchableOpacity
+                  style={[styles.voteButton, voteState?.userVote === 'like' && styles.voteButtonLiked]}
+                  onPress={() => handleVote('like')}
+                  disabled={!user}
+                >
+                  <MaterialIcons name="thumb-up" size={20} color={voteState?.userVote === 'like' ? '#fff' : '#4285F4'} />
+                  <Text style={[styles.voteCount, voteState?.userVote === 'like' && styles.voteCountActive]}>
+                    {voteState?.likes ?? selectedObstacle.likes}
+                  </Text>
+                </TouchableOpacity>
+                <TouchableOpacity
+                  style={[styles.voteButton, voteState?.userVote === 'dislike' && styles.voteButtonDisliked]}
+                  onPress={() => handleVote('dislike')}
+                  disabled={!user}
+                >
+                  <MaterialIcons name="thumb-down" size={20} color={voteState?.userVote === 'dislike' ? '#fff' : '#e53935'} />
+                  <Text style={[styles.voteCount, voteState?.userVote === 'dislike' && styles.voteCountActive]}>
+                    {voteState?.dislikes ?? selectedObstacle.dislikes}
+                  </Text>
+                </TouchableOpacity>
+              </View>
+              {!user && (
+                <Text style={styles.voteLoginHint}>로그인 후 평가할 수 있습니다</Text>
+              )}
               <TouchableOpacity
                 style={styles.modalCloseButton}
                 onPress={() => setSelectedObstacle(null)}
@@ -455,8 +559,47 @@ const styles = StyleSheet.create({
     fontSize: 15,
     color: '#333',
   },
+  voteRow: {
+    flexDirection: 'row',
+    gap: 12,
+    marginTop: 16,
+  },
+  voteButton: {
+    flex: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 8,
+    paddingVertical: 12,
+    borderRadius: 12,
+    borderWidth: 1.5,
+    borderColor: '#e0e0e0',
+    backgroundColor: '#fafafa',
+  },
+  voteButtonLiked: {
+    backgroundColor: '#4285F4',
+    borderColor: '#4285F4',
+  },
+  voteButtonDisliked: {
+    backgroundColor: '#e53935',
+    borderColor: '#e53935',
+  },
+  voteCount: {
+    fontSize: 16,
+    fontWeight: '700',
+    color: '#333',
+  },
+  voteCountActive: {
+    color: '#fff',
+  },
+  voteLoginHint: {
+    textAlign: 'center',
+    fontSize: 12,
+    color: '#bbb',
+    marginTop: 8,
+  },
   modalCloseButton: {
-    marginTop: 20,
+    marginTop: 16,
     backgroundColor: '#4285F4',
     borderRadius: 12,
     paddingVertical: 14,
