@@ -1,9 +1,13 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
-import { StyleSheet, View, Text, TouchableOpacity, ActivityIndicator, Modal, Image } from 'react-native';
+import {
+  StyleSheet, View, Text, TouchableOpacity, ActivityIndicator,
+  Modal, Image, Alert, ScrollView,
+} from 'react-native';
 import { WebView } from 'react-native-webview';
 import { MaterialIcons } from '@expo/vector-icons';
 import * as Location from 'expo-location';
 import { useFocusEffect } from '@react-navigation/native';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { getAllObstaclesWithBase64, ObstacleRecord, castVote, getUserVote } from '../utils/database';
 import { useAuth } from '../context/AuthContext';
 
@@ -33,7 +37,7 @@ function buildMapHTML(lat: number, lng: number): string {
 <body>
   <div id="map"></div>
   <script>
-    var map = L.map('map', { zoomControl: true }).setView([${lat}, ${lng}], 16);
+    var map = L.map('map', { zoomControl: false }).setView([${lat}, ${lng}], 16);
 
     L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', {
       maxZoom: 19,
@@ -166,6 +170,7 @@ function buildMapHTML(lat: number, lng: number): string {
 
 export default function MapScreen({ navigation }: any) {
   const { user } = useAuth();
+  const insets = useSafeAreaInsets();
   const [location, setLocation] = useState<{ lat: number; lng: number; accuracy?: number } | null>(null);
   const [heading, setHeading] = useState<number | null>(null);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
@@ -175,6 +180,8 @@ export default function MapScreen({ navigation }: any) {
   const [selectedObstacle, setSelectedObstacle] = useState<ObstacleRecord | null>(null);
   const [voteState, setVoteState] = useState<{ likes: number; dislikes: number; userVote: 'like' | 'dislike' | null } | null>(null);
   const webViewRef = useRef<WebView>(null);
+
+  const showWip = () => Alert.alert('알림', '아직 개발중입니다.');
 
   useEffect(() => {
     let posSubscription: Location.LocationSubscription | null = null;
@@ -188,7 +195,6 @@ export default function MapScreen({ navigation }: any) {
         return;
       }
 
-      // 빠른 초기 위치 (배터리 절약 모드로 빠르게 첫 위치 취득)
       try {
         const initial = await Location.getCurrentPositionAsync({
           accuracy: Location.Accuracy.Balanced,
@@ -206,7 +212,6 @@ export default function MapScreen({ navigation }: any) {
         setLoading(false);
       }
 
-      // 고정밀 위치 지속 추적
       posSubscription = await Location.watchPositionAsync(
         {
           accuracy: Location.Accuracy.High,
@@ -222,7 +227,6 @@ export default function MapScreen({ navigation }: any) {
         }
       );
 
-      // 나침반 방향 추적
       try {
         headingSubscription = await Location.watchHeadingAsync((h) => {
           const deg = h.trueHeading >= 0 ? h.trueHeading : h.magHeading;
@@ -239,14 +243,12 @@ export default function MapScreen({ navigation }: any) {
     };
   }, []);
 
-  // 화면 포커스될 때마다 장애물 데이터 로드
   useFocusEffect(
     useCallback(() => {
       getAllObstaclesWithBase64().then(setObstacles).catch(console.error);
     }, [])
   );
 
-  // 모달 열릴 때 투표 데이터 로드
   useEffect(() => {
     if (!selectedObstacle) { setVoteState(null); return; }
     const userId = user?.uid ?? '';
@@ -265,7 +267,6 @@ export default function MapScreen({ navigation }: any) {
     if (!selectedObstacle || !user) return;
     const result = await castVote(selectedObstacle.id, user.uid, voteType);
     setVoteState(result);
-    // 로컬 obstacles 목록도 업데이트
     setObstacles(prev =>
       prev.map(o => o.id === selectedObstacle.id
         ? { ...o, likes: result.likes, dislikes: result.dislikes }
@@ -274,7 +275,6 @@ export default function MapScreen({ navigation }: any) {
     );
   };
 
-  // WebView에 위치 업데이트 전송
   useEffect(() => {
     if (!mapReady || !location) return;
     webViewRef.current?.injectJavaScript(`
@@ -283,7 +283,6 @@ export default function MapScreen({ navigation }: any) {
     `);
   }, [location, mapReady]);
 
-  // WebView에 방향 업데이트 전송
   useEffect(() => {
     if (!mapReady || heading === null) return;
     webViewRef.current?.injectJavaScript(`
@@ -292,7 +291,6 @@ export default function MapScreen({ navigation }: any) {
     `);
   }, [heading, mapReady]);
 
-  // WebView에 장애물 마커 전송
   useEffect(() => {
     if (!mapReady) return;
     webViewRef.current?.injectJavaScript(`
@@ -340,9 +338,10 @@ export default function MapScreen({ navigation }: any) {
 
   return (
     <View style={styles.container}>
+      {/* 지도 (전체 화면) */}
       <WebView
         ref={webViewRef}
-        style={styles.map}
+        style={StyleSheet.absoluteFill}
         source={{ html: buildMapHTML(initLat, initLng) }}
         originWhitelist={['*']}
         javaScriptEnabled
@@ -360,18 +359,62 @@ export default function MapScreen({ navigation }: any) {
         }}
       />
 
-      {/* 현재 위치 버튼 */}
-      <TouchableOpacity
-        style={[styles.locationButton, !location && styles.locationButtonDisabled]}
-        onPress={flyToCurrentLocation}
-        activeOpacity={0.8}
-      >
-        <MaterialIcons
-          name="my-location"
-          size={24}
-          color={location ? '#4285F4' : '#aaa'}
-        />
-      </TouchableOpacity>
+      {/* 상단 오버레이: 검색창 + 필터 */}
+      <View style={[styles.topOverlay, { paddingTop: insets.top + 8 }]}>
+        <View style={styles.searchRow}>
+          <TouchableOpacity style={styles.searchBar} onPress={showWip} activeOpacity={0.8}>
+            <MaterialIcons name="search" size={20} color="#aaa" />
+            <Text style={styles.searchPlaceholder}>목적지 검색</Text>
+          </TouchableOpacity>
+          <TouchableOpacity style={styles.editButton} onPress={showWip} activeOpacity={0.8}>
+            <MaterialIcons name="edit-note" size={26} color="#333" />
+          </TouchableOpacity>
+        </View>
+
+        <ScrollView
+          horizontal
+          showsHorizontalScrollIndicator={false}
+          contentContainerStyle={styles.filterContent}
+          style={styles.filterScroll}
+        >
+          <TouchableOpacity style={styles.filterChip} onPress={showWip} activeOpacity={0.8}>
+            <MaterialIcons name="tune" size={14} color="#555" />
+            <Text style={styles.filterChipText}> 필터</Text>
+          </TouchableOpacity>
+          <TouchableOpacity style={[styles.filterChip, styles.filterChipActive]} onPress={showWip} activeOpacity={0.8}>
+            <Text style={styles.filterChipActiveText}>✈ 경사로</Text>
+          </TouchableOpacity>
+          <TouchableOpacity style={styles.filterChip} onPress={showWip} activeOpacity={0.8}>
+            <MaterialIcons name="elevator" size={14} color="#555" />
+            <Text style={styles.filterChipText}> 엘리베이터</Text>
+          </TouchableOpacity>
+          <TouchableOpacity style={styles.filterChip} onPress={showWip} activeOpacity={0.8}>
+            <MaterialIcons name="wc" size={14} color="#555" />
+            <Text style={styles.filterChipText}> 장애인화장실</Text>
+          </TouchableOpacity>
+        </ScrollView>
+      </View>
+
+      {/* 우측 플로팅 버튼들 */}
+      <View style={styles.rightButtons}>
+        <TouchableOpacity
+          style={styles.mapIconBtn}
+          onPress={flyToCurrentLocation}
+          activeOpacity={0.8}
+        >
+          <MaterialIcons name="my-location" size={22} color={location ? '#333' : '#aaa'} />
+        </TouchableOpacity>
+        <TouchableOpacity style={styles.mapIconBtn} onPress={showWip} activeOpacity={0.8}>
+          <MaterialIcons name="layers" size={22} color="#333" />
+        </TouchableOpacity>
+        <TouchableOpacity
+          style={styles.mapIconBtn}
+          onPress={() => navigation.navigate('기여하기')}
+          activeOpacity={0.8}
+        >
+          <MaterialIcons name="add" size={22} color="#333" />
+        </TouchableOpacity>
+      </View>
 
       {/* 기여하기 플로팅 버튼 */}
       <TouchableOpacity
@@ -382,6 +425,29 @@ export default function MapScreen({ navigation }: any) {
         <MaterialIcons name="add-location-alt" size={22} color="#fff" />
         <Text style={styles.contributeButtonText}>기여하기</Text>
       </TouchableOpacity>
+
+      {/* 하단 경로 시트 */}
+      <View style={[styles.bottomSheet, { paddingBottom: insets.bottom + 16 }]}>
+        <View style={styles.dragHandle} />
+        <View style={styles.routeRow}>
+          <View style={styles.routeIconBox}>
+            <Text style={styles.routeEmoji}>🚀</Text>
+          </View>
+          <View style={styles.routeTextBox}>
+            <Text style={styles.routeLabel}>추천 경로</Text>
+            <Text style={styles.routeTitle}>천안 안전 경로</Text>
+            <Text style={styles.routeSub}>위험구간 2개 · 안전도 높음</Text>
+          </View>
+        </View>
+        <View style={styles.routeBtnRow}>
+          <TouchableOpacity style={styles.normalBtn} onPress={showWip} activeOpacity={0.8}>
+            <Text style={styles.normalBtnText}>일반 경로</Text>
+          </TouchableOpacity>
+          <TouchableOpacity style={styles.safeBtn} onPress={showWip} activeOpacity={0.8}>
+            <Text style={styles.safeBtnText}>안전 길찾기 시작</Text>
+          </TouchableOpacity>
+        </View>
+      </View>
 
       {/* 장애물 상세 모달 */}
       {selectedObstacle && (
@@ -416,7 +482,6 @@ export default function MapScreen({ navigation }: any) {
                     : selectedObstacle.userEmail || '익명'}
                 </Text>
               </View>
-              {/* 좋아요 / 싫어요 */}
               <View style={styles.voteRow}>
                 <TouchableOpacity
                   style={[styles.voteButton, voteState?.userVote === 'like' && styles.voteButtonLiked]}
@@ -459,9 +524,7 @@ export default function MapScreen({ navigation }: any) {
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-  },
-  map: {
-    flex: 1,
+    backgroundColor: '#e8e8e8',
   },
   centered: {
     flex: 1,
@@ -480,28 +543,113 @@ const styles = StyleSheet.create({
     textAlign: 'center',
     paddingHorizontal: 24,
   },
-  locationButton: {
+
+  /* 상단 오버레이 */
+  topOverlay: {
     position: 'absolute',
-    bottom: 84,
-    right: 16,
+    top: 0,
+    left: 0,
+    right: 0,
+    paddingHorizontal: 16,
+    paddingBottom: 10,
+    backgroundColor: 'transparent',
+  },
+  searchRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    marginBottom: 8,
+  },
+  searchBar: {
+    flex: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#fff',
+    borderRadius: 12,
+    paddingHorizontal: 14,
+    paddingVertical: 12,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.12,
+    shadowRadius: 6,
+    elevation: 4,
+    gap: 8,
+  },
+  searchPlaceholder: {
+    fontSize: 15,
+    color: '#aaa',
+    flex: 1,
+  },
+  editButton: {
     width: 48,
     height: 48,
-    borderRadius: 24,
+    borderRadius: 12,
     backgroundColor: '#fff',
     justifyContent: 'center',
     alignItems: 'center',
     shadowColor: '#000',
     shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.25,
-    shadowRadius: 4,
-    elevation: 5,
+    shadowOpacity: 0.12,
+    shadowRadius: 6,
+    elevation: 4,
   },
-  locationButtonDisabled: {
-    opacity: 0.6,
+  filterScroll: {
+    flexGrow: 0,
+  },
+  filterContent: {
+    gap: 8,
+    paddingRight: 8,
+  },
+  filterChip: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#fff',
+    borderRadius: 20,
+    paddingHorizontal: 14,
+    paddingVertical: 8,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 1 },
+    shadowOpacity: 0.1,
+    shadowRadius: 3,
+    elevation: 2,
+  },
+  filterChipActive: {
+    backgroundColor: '#F5A623',
+  },
+  filterChipText: {
+    fontSize: 13,
+    color: '#333',
+    fontWeight: '500',
+  },
+  filterChipActiveText: {
+    fontSize: 13,
+    color: '#fff',
+    fontWeight: '600',
+  },
+
+  /* 우측 버튼 */
+  rightButtons: {
+    position: 'absolute',
+    right: 16,
+    top: '42%',
+    gap: 8,
+  },
+  mapIconBtn: {
+    width: 44,
+    height: 44,
+    borderRadius: 10,
+    backgroundColor: '#fff',
+    justifyContent: 'center',
+    alignItems: 'center',
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.15,
+    shadowRadius: 4,
+    elevation: 4,
   },
   contributeButton: {
     position: 'absolute',
-    bottom: 24,
+    bottom: 200,
     right: 16,
     flexDirection: 'row',
     alignItems: 'center',
@@ -521,6 +669,101 @@ const styles = StyleSheet.create({
     fontWeight: 'bold',
     fontSize: 14,
   },
+
+  /* 하단 경로 시트 */
+  bottomSheet: {
+    position: 'absolute',
+    bottom: 0,
+    left: 0,
+    right: 0,
+    backgroundColor: '#fff',
+    borderTopLeftRadius: 20,
+    borderTopRightRadius: 20,
+    paddingHorizontal: 20,
+    paddingTop: 12,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: -3 },
+    shadowOpacity: 0.1,
+    shadowRadius: 8,
+    elevation: 10,
+  },
+  dragHandle: {
+    width: 36,
+    height: 4,
+    borderRadius: 2,
+    backgroundColor: '#e0e0e0',
+    alignSelf: 'center',
+    marginBottom: 14,
+  },
+  routeRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 14,
+    marginBottom: 16,
+  },
+  routeIconBox: {
+    width: 52,
+    height: 52,
+    borderRadius: 14,
+    backgroundColor: '#F5F5F5',
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  routeEmoji: {
+    fontSize: 26,
+  },
+  routeTextBox: {
+    flex: 1,
+    gap: 2,
+  },
+  routeLabel: {
+    fontSize: 12,
+    color: '#F5A623',
+    fontWeight: '600',
+  },
+  routeTitle: {
+    fontSize: 18,
+    fontWeight: '700',
+    color: '#1A1A1A',
+  },
+  routeSub: {
+    fontSize: 13,
+    color: '#888',
+    marginTop: 2,
+  },
+  routeBtnRow: {
+    flexDirection: 'row',
+    gap: 10,
+    marginBottom: 4,
+  },
+  normalBtn: {
+    flex: 1,
+    paddingVertical: 14,
+    borderRadius: 12,
+    borderWidth: 1.5,
+    borderColor: '#E0E0E0',
+    alignItems: 'center',
+    backgroundColor: '#fff',
+  },
+  normalBtnText: {
+    fontSize: 15,
+    fontWeight: '600',
+    color: '#333',
+  },
+  safeBtn: {
+    flex: 2,
+    paddingVertical: 14,
+    borderRadius: 12,
+    alignItems: 'center',
+    backgroundColor: '#1A1A1A',
+  },
+  safeBtnText: {
+    fontSize: 15,
+    fontWeight: '600',
+    color: '#fff',
+  },
+
+  /* 장애물 모달 */
   modalOverlay: {
     flex: 1,
     backgroundColor: 'rgba(0,0,0,0.5)',
