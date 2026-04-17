@@ -416,15 +416,6 @@ export default function MapScreen({ navigation }: any) {
         </TouchableOpacity>
       </View>
 
-      {/* 기여하기 플로팅 버튼 */}
-      <TouchableOpacity
-        style={styles.contributeButton}
-        onPress={() => navigation.navigate('기여하기')}
-        activeOpacity={0.85}
-      >
-        <MaterialIcons name="add-location-alt" size={22} color="#fff" />
-        <Text style={styles.contributeButtonText}>기여하기</Text>
-      </TouchableOpacity>
 
       {/* 하단 경로 시트 */}
       <View style={[styles.bottomSheet, { paddingBottom: insets.bottom + 16 }]}>
@@ -631,7 +622,7 @@ const styles = StyleSheet.create({
   rightButtons: {
     position: 'absolute',
     right: 16,
-    top: '42%',
+    bottom: 210,
     gap: 8,
   },
   mapIconBtn: {
@@ -646,28 +637,6 @@ const styles = StyleSheet.create({
     shadowOpacity: 0.15,
     shadowRadius: 4,
     elevation: 4,
-  },
-  contributeButton: {
-    position: 'absolute',
-    bottom: 200,
-    right: 16,
-    flexDirection: 'row',
-    alignItems: 'center',
-    backgroundColor: '#FF5722',
-    paddingHorizontal: 16,
-    paddingVertical: 12,
-    borderRadius: 28,
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.3,
-    shadowRadius: 4,
-    elevation: 6,
-    gap: 6,
-  },
-  contributeButtonText: {
-    color: '#fff',
-    fontWeight: 'bold',
-    fontSize: 14,
   },
 
   /* 하단 경로 시트 */
