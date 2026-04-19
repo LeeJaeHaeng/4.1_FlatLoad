@@ -7,10 +7,9 @@ import {
   Image,
   Alert,
   ActivityIndicator,
-  SafeAreaView,
   ScrollView,
-  FlatList,
 } from 'react-native';
+import { SafeAreaView } from 'react-native-safe-area-context';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { CameraView, CameraType, useCameraPermissions } from 'expo-camera';
 import { MaterialIcons } from '@expo/vector-icons';
@@ -23,6 +22,11 @@ import {
   ObstacleRecord,
   TopContributor,
 } from '../utils/database';
+import {
+  apiCreateObstacle,
+  apiGetMyObstacles,
+  apiGetTopContributors,
+} from '../utils/api';
 import { useAuth } from '../context/AuthContext';
 
 type Screen = 'list' | 'camera' | 'preview';
@@ -58,11 +62,11 @@ export default function ContributeScreen() {
     setListLoading(true);
     try {
       const [obstacles, top] = await Promise.all([
-        user ? getMyObstacles(user.uid) : Promise.resolve([]),
-        getTopContributors(3),
+        user ? apiGetMyObstacles(user.uid).catch(() => getMyObstacles(user.uid)) : Promise.resolve([]),
+        apiGetTopContributors().catch(() => getTopContributors(3)),
       ]);
-      setMyObstacles(obstacles);
-      setTopContributors(top);
+      setMyObstacles(obstacles as ObstacleRecord[]);
+      setTopContributors(top as TopContributor[]);
     } finally {
       setListLoading(false);
     }
@@ -114,16 +118,36 @@ export default function ContributeScreen() {
         loc = await Location.getCurrentPositionAsync({ accuracy: Location.Accuracy.Balanced });
       }
 
-      await saveObstacle(
-        capturedUri,
-        loc.coords.latitude,
-        loc.coords.longitude,
-        user?.uid ?? '',
-        user?.email ?? '',
-        user?.displayName ?? ''
-      );
+      // 백엔드 API로 저장 (AI 분석 포함) — 실패 시 로컬 SQLite 폴백
+      let aiLabel: string | null = null;
+      let aiConfidence: number | null = null;
+      try {
+        const result = await apiCreateObstacle(
+          capturedUri,
+          loc.coords.latitude,
+          loc.coords.longitude,
+          user?.uid ?? '',
+          user?.email ?? '',
+          user?.displayName ?? ''
+        );
+        aiLabel = result.aiLabel;
+        aiConfidence = result.aiConfidence;
+      } catch {
+        // 서버 연결 실패 시 로컬 저장
+        await saveObstacle(
+          capturedUri,
+          loc.coords.latitude,
+          loc.coords.longitude,
+          user?.uid ?? '',
+          user?.email ?? '',
+          user?.displayName ?? ''
+        );
+      }
 
-      Alert.alert('저장 완료', '장애물 정보가 저장되었습니다.', [
+      const aiMsg = aiLabel
+        ? `\n\n🤖 AI 분석 결과: ${aiLabel} (신뢰도 ${Math.round((aiConfidence ?? 0) * 100)}%)`
+        : '';
+      Alert.alert('저장 완료', `장애물 정보가 저장되었습니다.${aiMsg}`, [
         {
           text: '확인',
           onPress: () => {

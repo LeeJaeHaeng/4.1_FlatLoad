@@ -32,6 +32,26 @@ yarn-error.*
 
 # local env files
 .env*.local
+.env
+
+# secrets
+backend/.env
+backend/firebase-adminsdk.json
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+
+# VSCode
+.vscode/
+
+# large model weights
+*.weights
+*.pt
+
+# Claude Code
+.claude/
 
 # typescript
 *.tsbuildinfo

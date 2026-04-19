@@ -12,11 +12,14 @@ import {
 } from 'react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import { GoogleSignin, statusCodes } from '@react-native-google-signin/google-signin';
+import * as Google from 'expo-auth-session/providers/google';
+import * as WebBrowser from 'expo-web-browser';
 import { GoogleAuthProvider, signInWithCredential } from 'firebase/auth';
 import { MaterialIcons } from '@expo/vector-icons';
 import { useAuth } from '../context/AuthContext';
 import { auth } from '../utils/firebase';
+
+WebBrowser.maybeCompleteAuthSession();
 
 
 export default function MyPageScreen() {
@@ -24,34 +27,46 @@ export default function MyPageScreen() {
   const [loading, setLoading] = useState(false);
   const [muteShutter, setMuteShutter] = useState(false);
 
+  const WEB_CLIENT_ID = '101038938383-e37ac02m8qn1fehmoo79tun7k0gt8r9e.apps.googleusercontent.com';
+  // androidClientId: Firebase 콘솔 > 프로젝트 설정 > Android 앱에서 SHA-1 등록 후
+  // Google Cloud Console에서 Android OAuth 클라이언트 ID 발급 필요
+  // 임시로 webClientId 사용 (실제 Android 빌드 시 교체 필요)
+  const [, response, promptAsync] = Google.useAuthRequest({
+    webClientId: WEB_CLIENT_ID,
+    androidClientId: WEB_CLIENT_ID,
+  });
+
   useEffect(() => {
     AsyncStorage.getItem('settings.muteShutter').then((val) => {
       if (val !== null) setMuteShutter(val === 'true');
     });
   }, []);
 
+  useEffect(() => {
+    if (!response) return;
+    setLoading(false);
+    if (response.type === 'success') {
+      const idToken = response.authentication?.idToken ?? null;
+      const accessToken = response.authentication?.accessToken ?? null;
+      if (accessToken) {
+        const credential = GoogleAuthProvider.credential(idToken, accessToken);
+        signInWithCredential(auth, credential).catch((e) =>
+          Alert.alert('로그인 실패', e.message ?? '오류가 발생했습니다.')
+        );
+      }
+    } else if (response.type === 'error') {
+      Alert.alert('로그인 실패', response.error?.message ?? '오류가 발생했습니다.');
+    }
+  }, [response]);
+
   const toggleMuteShutter = (value: boolean) => {
     setMuteShutter(value);
     AsyncStorage.setItem('settings.muteShutter', String(value));
   };
 
-  // Google 로그인 처리
   const handleGoogleLogin = async () => {
     setLoading(true);
-    try {
-      await GoogleSignin.hasPlayServices();
-      const userInfo = await GoogleSignin.signIn();
-      const idToken = userInfo.data?.idToken;
-      if (!idToken) throw new Error('ID 토큰을 받지 못했습니다.');
-      const credential = GoogleAuthProvider.credential(idToken);
-      await signInWithCredential(auth, credential);
-    } catch (e: any) {
-      if (e.code !== statusCodes.SIGN_IN_CANCELLED) {
-        Alert.alert('로그인 실패', e.message ?? '오류가 발생했습니다.');
-      }
-    } finally {
-      setLoading(false);
-    }
+    await promptAsync();
   };
 
   const handleLogout = async () => {

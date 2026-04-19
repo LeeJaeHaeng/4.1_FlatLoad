@@ -4,11 +4,6 @@ import { createBottomTabNavigator } from '@react-navigation/bottom-tabs';
 import { View, Text, StyleSheet } from 'react-native';
 import { MaterialIcons } from '@expo/vector-icons';
 import { AuthProvider } from './context/AuthContext';
-import { GoogleSignin } from '@react-native-google-signin/google-signin';
-
-GoogleSignin.configure({
-  webClientId: '101038938383-e37ac02m8qn1fehmoo79tun7k0gt8r9e.apps.googleusercontent.com',
-});
 
 import MapScreen from './screens/MapScreen';
 import CommunityScreen from './screens/CommunityScreen';
