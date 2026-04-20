@@ -1154,7 +1154,6 @@ export default function MapScreen({ navigation }: any) {
                 <TouchableOpacity
                   style={[styles.voteButton, voteState?.userVote === 'like' && styles.voteButtonLiked]}
                   onPress={() => handleVote('like')}
-                  disabled={!user}
                 >
                   <MaterialIcons name="thumb-up" size={20} color={voteState?.userVote === 'like' ? '#fff' : '#4285F4'} />
                   <Text style={[styles.voteCount, voteState?.userVote === 'like' && styles.voteCountActive]}>
@@ -1164,7 +1163,6 @@ export default function MapScreen({ navigation }: any) {
                 <TouchableOpacity
                   style={[styles.voteButton, voteState?.userVote === 'dislike' && styles.voteButtonDisliked]}
                   onPress={() => handleVote('dislike')}
-                  disabled={!user}
                 >
                   <MaterialIcons name="thumb-down" size={20} color={voteState?.userVote === 'dislike' ? '#fff' : '#e53935'} />
                   <Text style={[styles.voteCount, voteState?.userVote === 'dislike' && styles.voteCountActive]}>
@@ -1172,9 +1170,6 @@ export default function MapScreen({ navigation }: any) {
                   </Text>
                 </TouchableOpacity>
               </View>
-              {!user && (
-                <Text style={styles.voteLoginHint}>로그인 후 평가할 수 있습니다</Text>
-              )}
               <TouchableOpacity
                 style={styles.modalCloseButton}
                 onPress={() => setSelectedObstacle(null)}

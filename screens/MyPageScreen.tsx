@@ -3,38 +3,15 @@ import {
   View,
   Text,
   StyleSheet,
-  TouchableOpacity,
-  Image,
-  ActivityIndicator,
-  Alert,
-  ScrollView,
   Switch,
+  ScrollView,
 } from 'react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import * as Google from 'expo-auth-session/providers/google';
-import * as WebBrowser from 'expo-web-browser';
-import { GoogleAuthProvider, signInWithCredential } from 'firebase/auth';
 import { MaterialIcons } from '@expo/vector-icons';
-import { useAuth } from '../context/AuthContext';
-import { auth } from '../utils/firebase';
-
-WebBrowser.maybeCompleteAuthSession();
-
 
 export default function MyPageScreen() {
-  const { user, logout } = useAuth();
-  const [loading, setLoading] = useState(false);
   const [muteShutter, setMuteShutter] = useState(false);
-
-  const WEB_CLIENT_ID = '101038938383-e37ac02m8qn1fehmoo79tun7k0gt8r9e.apps.googleusercontent.com';
-  // androidClientId: Firebase 콘솔 > 프로젝트 설정 > Android 앱에서 SHA-1 등록 후
-  // Google Cloud Console에서 Android OAuth 클라이언트 ID 발급 필요
-  // 임시로 webClientId 사용 (실제 Android 빌드 시 교체 필요)
-  const [, response, promptAsync] = Google.useAuthRequest({
-    webClientId: WEB_CLIENT_ID,
-    androidClientId: WEB_CLIENT_ID,
-  });
 
   useEffect(() => {
     AsyncStorage.getItem('settings.muteShutter').then((val) => {
@@ -42,163 +19,29 @@ export default function MyPageScreen() {
     });
   }, []);
 
-  useEffect(() => {
-    if (!response) return;
-    setLoading(false);
-    if (response.type === 'success') {
-      const idToken = response.authentication?.idToken ?? null;
-      const accessToken = response.authentication?.accessToken ?? null;
-      if (accessToken) {
-        const credential = GoogleAuthProvider.credential(idToken, accessToken);
-        signInWithCredential(auth, credential).catch((e) =>
-          Alert.alert('로그인 실패', e.message ?? '오류가 발생했습니다.')
-        );
-      }
-    } else if (response.type === 'error') {
-      Alert.alert('로그인 실패', response.error?.message ?? '오류가 발생했습니다.');
-    }
-  }, [response]);
-
   const toggleMuteShutter = (value: boolean) => {
     setMuteShutter(value);
     AsyncStorage.setItem('settings.muteShutter', String(value));
   };
 
-  const handleGoogleLogin = async () => {
-    setLoading(true);
-    await promptAsync();
-  };
-
-  const handleLogout = async () => {
-    Alert.alert('로그아웃', '로그아웃 하시겠습니까?', [
-      { text: '취소', style: 'cancel' },
-      {
-        text: '로그아웃',
-        style: 'destructive',
-        onPress: async () => {
-          try {
-            await logout();
-          } catch {
-            Alert.alert('오류', '로그아웃 중 오류가 발생했습니다.');
-          }
-        },
-      },
-    ]);
-  };
-
-  // ── 로그인 안 된 상태 ──────────────────────────────────────────
-  if (!user) {
-    return (
-      <SafeAreaView style={styles.container}>
-        <View style={styles.loginContainer}>
-          <View style={styles.logoWrap}>
-            <MaterialIcons name="account-circle" size={80} color="#ccc" />
-            <Text style={styles.appName}>마이페이지</Text>
-            <Text style={styles.loginDesc}>
-              로그인하고 장애물 기여 활동을{'\n'}기록으로 남겨보세요.
-            </Text>
-          </View>
-
-          <TouchableOpacity
-            style={[styles.googleButton, loading && styles.buttonDisabled]}
-            onPress={handleGoogleLogin}
-            activeOpacity={0.85}
-            disabled={loading}
-          >
-            {loading ? (
-              <ActivityIndicator color="#444" size="small" />
-            ) : (
-              <>
-                <Image
-                  source={{ uri: 'https://www.google.com/favicon.ico' }}
-                  style={styles.googleIcon}
-                />
-                <Text style={styles.googleButtonText}>Google로 계속하기</Text>
-              </>
-            )}
-          </TouchableOpacity>
-
-          <Text style={styles.termsText}>
-            로그인 시 서비스 이용약관 및 개인정보처리방침에 동의합니다.
-          </Text>
-        </View>
-
-        {/* 설정 섹션 */}
-        <View style={styles.settingsSection}>
-          <Text style={styles.settingsSectionTitle}>설정</Text>
-          <View style={styles.settingRow}>
-            <MaterialIcons name="volume-off" size={20} color="#555" />
-            <View style={styles.settingTextWrap}>
-              <Text style={styles.settingLabel}>카메라 셔터음 끄기</Text>
-              <Text style={styles.settingDesc}>촬영 시 소리가 나지 않습니다</Text>
-            </View>
-            <Switch
-              value={muteShutter}
-              onValueChange={toggleMuteShutter}
-              trackColor={{ false: '#ddd', true: '#4285F4' }}
-              thumbColor="#fff"
-            />
-          </View>
-        </View>
-      </SafeAreaView>
-    );
-  }
-
-  // ── 로그인 된 상태 ─────────────────────────────────────────────
-  const displayName = user.displayName ?? '이름 없음';
-  const email = user.email ?? '';
-  const photoURL = user.photoURL;
-  // Google 계정 ID (이메일 앞 부분 또는 uid)
-  const googleId = email || user.uid;
-
   return (
     <SafeAreaView style={styles.container}>
-      <ScrollView contentContainerStyle={styles.profileScroll}>
+      <ScrollView contentContainerStyle={styles.scroll}>
         {/* 프로필 카드 */}
         <View style={styles.profileCard}>
-          {photoURL ? (
-            <Image source={{ uri: photoURL }} style={styles.avatar} />
-          ) : (
-            <View style={styles.avatarFallback}>
-              <MaterialIcons name="person" size={40} color="#fff" />
-            </View>
-          )}
-          <Text style={styles.displayName}>{displayName}</Text>
-          <Text style={styles.email}>{email}</Text>
-        </View>
-
-        {/* 계정 정보 */}
-        <View style={styles.infoSection}>
-          <Text style={styles.sectionTitle}>계정 정보</Text>
-
-          <View style={styles.infoRow}>
-            <MaterialIcons name="badge" size={20} color="#4285F4" />
-            <View style={styles.infoTextWrap}>
-              <Text style={styles.infoLabel}>Google ID</Text>
-              <Text style={styles.infoValue} selectable>{googleId}</Text>
-            </View>
+          <View style={styles.avatarFallback}>
+            <MaterialIcons name="person" size={40} color="#fff" />
           </View>
-
-          <View style={styles.infoRow}>
-            <MaterialIcons name="verified-user" size={20} color="#34A853" />
-            <View style={styles.infoTextWrap}>
-              <Text style={styles.infoLabel}>Firebase UID</Text>
-              <Text style={styles.infoValue} selectable>{user.uid}</Text>
-            </View>
+          <View style={styles.demoBadge}>
+            <Text style={styles.demoBadgeText}>DEMO</Text>
           </View>
-
-          <View style={styles.infoRow}>
-            <MaterialIcons name="login" size={20} color="#888" />
-            <View style={styles.infoTextWrap}>
-              <Text style={styles.infoLabel}>로그인 방법</Text>
-              <Text style={styles.infoValue}>Google</Text>
-            </View>
-          </View>
+          <Text style={styles.displayName}>데모 사용자</Text>
+          <Text style={styles.email}>demo@flatroad.app</Text>
         </View>
 
         {/* 설정 섹션 */}
         <View style={styles.settingsSection}>
-          <Text style={styles.settingsSectionTitle}>설정</Text>
+          <Text style={styles.sectionTitle}>설정</Text>
           <View style={styles.settingRow}>
             <MaterialIcons name="volume-off" size={20} color="#555" />
             <View style={styles.settingTextWrap}>
@@ -214,11 +57,24 @@ export default function MyPageScreen() {
           </View>
         </View>
 
-        {/* 로그아웃 버튼 */}
-        <TouchableOpacity style={styles.logoutButton} onPress={handleLogout} activeOpacity={0.8}>
-          <MaterialIcons name="logout" size={20} color="#e53935" />
-          <Text style={styles.logoutText}>로그아웃</Text>
-        </TouchableOpacity>
+        {/* 앱 정보 */}
+        <View style={styles.infoSection}>
+          <Text style={styles.sectionTitle}>앱 정보</Text>
+          <View style={styles.infoRow}>
+            <MaterialIcons name="info-outline" size={20} color="#4285F4" />
+            <View style={styles.infoTextWrap}>
+              <Text style={styles.infoLabel}>버전</Text>
+              <Text style={styles.infoValue}>1.0.0 (데모)</Text>
+            </View>
+          </View>
+          <View style={styles.infoRow}>
+            <MaterialIcons name="directions-walk" size={20} color="#34A853" />
+            <View style={styles.infoTextWrap}>
+              <Text style={styles.infoLabel}>서비스</Text>
+              <Text style={styles.infoValue}>FlatRoad — 전동이동보조기기 안전 경로 안내</Text>
+            </View>
+          </View>
+        </View>
       </ScrollView>
     </SafeAreaView>
   );
@@ -229,69 +85,7 @@ const styles = StyleSheet.create({
     flex: 1,
     backgroundColor: '#f8f9fa',
   },
-  // ── 로그인 전 ─────────────────────────────────────────────────
-  loginContainer: {
-    flex: 1,
-    justifyContent: 'center',
-    alignItems: 'center',
-    paddingHorizontal: 32,
-  },
-  logoWrap: {
-    alignItems: 'center',
-    marginBottom: 48,
-  },
-  appName: {
-    fontSize: 26,
-    fontWeight: 'bold',
-    color: '#222',
-    marginTop: 12,
-  },
-  loginDesc: {
-    marginTop: 10,
-    fontSize: 14,
-    color: '#888',
-    textAlign: 'center',
-    lineHeight: 22,
-  },
-  googleButton: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    backgroundColor: '#fff',
-    borderWidth: 1,
-    borderColor: '#ddd',
-    borderRadius: 12,
-    paddingVertical: 14,
-    paddingHorizontal: 24,
-    width: '100%',
-    justifyContent: 'center',
-    gap: 10,
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 1 },
-    shadowOpacity: 0.08,
-    shadowRadius: 3,
-    elevation: 2,
-  },
-  buttonDisabled: {
-    opacity: 0.6,
-  },
-  googleIcon: {
-    width: 20,
-    height: 20,
-  },
-  googleButtonText: {
-    fontSize: 16,
-    fontWeight: '600',
-    color: '#333',
-  },
-  termsText: {
-    marginTop: 20,
-    fontSize: 11,
-    color: '#bbb',
-    textAlign: 'center',
-    lineHeight: 18,
-  },
-  // ── 로그인 후 ─────────────────────────────────────────────────
-  profileScroll: {
+  scroll: {
     padding: 20,
     gap: 16,
   },
@@ -306,12 +100,6 @@ const styles = StyleSheet.create({
     shadowRadius: 4,
     elevation: 2,
   },
-  avatar: {
-    width: 88,
-    height: 88,
-    borderRadius: 44,
-    backgroundColor: '#eee',
-  },
   avatarFallback: {
     width: 88,
     height: 88,
@@ -320,8 +108,21 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     alignItems: 'center',
   },
+  demoBadge: {
+    marginTop: 10,
+    backgroundColor: '#F5A623',
+    borderRadius: 8,
+    paddingHorizontal: 10,
+    paddingVertical: 3,
+  },
+  demoBadgeText: {
+    fontSize: 11,
+    fontWeight: '700',
+    color: '#fff',
+    letterSpacing: 1,
+  },
   displayName: {
-    marginTop: 14,
+    marginTop: 10,
     fontSize: 20,
     fontWeight: 'bold',
     color: '#222',
@@ -330,6 +131,17 @@ const styles = StyleSheet.create({
     marginTop: 4,
     fontSize: 14,
     color: '#888',
+  },
+  settingsSection: {
+    backgroundColor: '#fff',
+    borderRadius: 16,
+    padding: 16,
+    gap: 4,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 1 },
+    shadowOpacity: 0.06,
+    shadowRadius: 3,
+    elevation: 2,
   },
   infoSection: {
     backgroundColor: '#fff',
@@ -343,67 +155,6 @@ const styles = StyleSheet.create({
     elevation: 2,
   },
   sectionTitle: {
-    fontSize: 13,
-    fontWeight: '600',
-    color: '#999',
-    marginBottom: 8,
-    textTransform: 'uppercase',
-    letterSpacing: 0.5,
-  },
-  infoRow: {
-    flexDirection: 'row',
-    alignItems: 'flex-start',
-    paddingVertical: 10,
-    gap: 12,
-    borderBottomWidth: 1,
-    borderBottomColor: '#f0f0f0',
-  },
-  infoTextWrap: {
-    flex: 1,
-  },
-  infoLabel: {
-    fontSize: 11,
-    color: '#aaa',
-    marginBottom: 2,
-  },
-  infoValue: {
-    fontSize: 14,
-    color: '#333',
-  },
-  logoutButton: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    backgroundColor: '#fff',
-    borderRadius: 12,
-    paddingVertical: 16,
-    gap: 8,
-    borderWidth: 1,
-    borderColor: '#ffcdd2',
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 1 },
-    shadowOpacity: 0.05,
-    shadowRadius: 2,
-    elevation: 1,
-  },
-  logoutText: {
-    fontSize: 15,
-    fontWeight: '600',
-    color: '#e53935',
-  },
-  settingsSection: {
-    backgroundColor: '#fff',
-    borderRadius: 16,
-    marginHorizontal: 16,
-    marginTop: 16,
-    padding: 16,
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 1 },
-    shadowOpacity: 0.06,
-    shadowRadius: 3,
-    elevation: 2,
-  },
-  settingsSectionTitle: {
     fontSize: 13,
     fontWeight: '600',
     color: '#999',
@@ -429,5 +180,25 @@ const styles = StyleSheet.create({
     fontSize: 12,
     color: '#aaa',
     marginTop: 2,
+  },
+  infoRow: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    paddingVertical: 10,
+    gap: 12,
+    borderBottomWidth: 1,
+    borderBottomColor: '#f0f0f0',
+  },
+  infoTextWrap: {
+    flex: 1,
+  },
+  infoLabel: {
+    fontSize: 11,
+    color: '#aaa',
+    marginBottom: 2,
+  },
+  infoValue: {
+    fontSize: 14,
+    color: '#333',
   },
 });

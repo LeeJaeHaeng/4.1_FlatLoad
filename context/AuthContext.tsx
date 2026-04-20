@@ -1,45 +1,30 @@
-import React, { createContext, useContext, useEffect, useState } from 'react';
-import { onAuthStateChanged, signOut, User } from 'firebase/auth';
-import { auth } from '../utils/firebase';
+import React, { createContext, useContext } from 'react';
+
+// 데모 모드 — Firebase 인증 없이 고정 유저 반환
+const DEMO_USER = {
+  uid: 'demo-user-001',
+  email: 'demo@flatroad.app',
+  displayName: '데모 사용자',
+  photoURL: null as string | null,
+};
+
+type DemoUser = typeof DEMO_USER;
 
 interface AuthContextType {
-  user: User | null;
-  loading: boolean;
+  user: DemoUser;
+  loading: false;
   logout: () => Promise<void>;
 }
 
 const AuthContext = createContext<AuthContextType>({
-  user: null,
-  loading: true,
+  user: DEMO_USER,
+  loading: false,
   logout: async () => {},
 });
 
 export function AuthProvider({ children }: { children: React.ReactNode }) {
-  const [user, setUser] = useState<User | null>(null);
-  const [loading, setLoading] = useState(true);
-
-  useEffect(() => {
-    // onAuthStateChanged가 응답하지 않을 경우를 대비한 3초 타임아웃
-    const timeout = setTimeout(() => setLoading(false), 3000);
-
-    const unsubscribe = onAuthStateChanged(auth, (firebaseUser) => {
-      clearTimeout(timeout);
-      setUser(firebaseUser);
-      setLoading(false);
-    });
-
-    return () => {
-      clearTimeout(timeout);
-      unsubscribe();
-    };
-  }, []);
-
-  const logout = async () => {
-    await signOut(auth);
-  };
-
   return (
-    <AuthContext.Provider value={{ user, loading, logout }}>
+    <AuthContext.Provider value={{ user: DEMO_USER, loading: false, logout: async () => {} }}>
       {children}
     </AuthContext.Provider>
   );
