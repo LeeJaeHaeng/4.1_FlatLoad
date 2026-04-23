@@ -7,10 +7,12 @@ python-dotenv==1.0.1
 pydantic==2.9.2
 pydantic-settings==2.5.2
 firebase-admin==6.5.0
-httpx==0.27.2
 Pillow==10.4.0
+numpy
 
-# YOLOv5 (torch는 별도 설치 — 아래 SETUP.md 참조)
-torch==2.3.1
-torchvision==0.18.1
-# torch hub에서 yolov5 자동 다운로드됨
+# Detectron2 — 별도 설치 필요 (CUDA 버전에 맞게 URL 선택)
+# pip install torch torchvision --index-url https://download.pytorch.org/whl/cu118
+# pip install detectron2 -f https://dl.fbaipublicfiles.com/detectron2/wheels/cu118/torch2.0/index.html
+# CPU 전용:
+# pip install torch torchvision
+# pip install detectron2 -f https://dl.fbaipublicfiles.com/detectron2/wheels/cpu/torch2.0/index.html

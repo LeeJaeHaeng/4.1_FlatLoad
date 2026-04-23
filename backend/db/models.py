@@ -14,9 +14,9 @@ class Obstacle(Base):
     display_name = Column(String, nullable=False, default="")
     likes       = Column(Integer, nullable=False, default=0)
     dislikes    = Column(Integer, nullable=False, default=0)
-    # YOLOv4 분석 결과
-    ai_label    = Column(String, nullable=True)         # 감지된 장애물 종류
-    ai_confidence = Column(Float, nullable=True)        # 신뢰도 0~1
+    ai_label      = Column(String, nullable=True)
+    ai_confidence = Column(Float, nullable=True)
+    ai_detections = Column(Text, nullable=True)   # JSON: [{label,confidence,bbox}]
 
 
 class Vote(Base):

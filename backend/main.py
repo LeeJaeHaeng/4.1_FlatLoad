@@ -3,14 +3,13 @@ from fastapi.middleware.cors import CORSMiddleware
 from contextlib import asynccontextmanager
 from db.database import create_tables
 from routers import obstacles, community, analyze
-from services import yolo
+from services import detector
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # 서버 시작 시 DB 테이블 생성 + YOLO 모델 로드
     await create_tables()
-    yolo.load_model()
+    detector.load_model()
     yield
 
 
@@ -30,4 +29,8 @@ app.include_router(analyze.router)
 
 @app.get("/")
 async def root():
-    return {"status": "ok", "yolo_ready": yolo.YOLO_READY}
+    return {
+        "status": "ok",
+        "model_ready": detector.MODEL_READY,
+        "classes": detector.class_names,
+    }

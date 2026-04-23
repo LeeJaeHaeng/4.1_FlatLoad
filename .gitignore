@@ -49,6 +49,7 @@ __pycache__/
 # large model weights
 *.weights
 *.pt
+*.pth
 
 # Claude Code
 .claude/

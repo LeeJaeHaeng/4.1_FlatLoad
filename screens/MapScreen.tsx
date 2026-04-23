@@ -6,6 +6,7 @@ import {
 import { WebView } from 'react-native-webview';
 import { MaterialIcons } from '@expo/vector-icons';
 import * as Location from 'expo-location';
+import * as Speech from 'expo-speech';
 import { useFocusEffect } from '@react-navigation/native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { getAllObstaclesWithBase64, ObstacleRecord, castVote, getUserVote } from '../utils/database';
@@ -49,6 +50,12 @@ const getManeuverLabel = (t: number) => MANEUVER_LABELS[t] ?? '계속 직진';
 const fmtDist = (m: number) => m >= 1000 ? `${(m/1000).toFixed(1)}km` : `${Math.round(m)}m`;
 
 const KAKAO_KEY = process.env.EXPO_PUBLIC_KAKAO_REST_KEY ?? '';
+const KAKAO_JS_KEY = process.env.EXPO_PUBLIC_KAKAO_JS_KEY ?? '';
+
+function speak(text: string) {
+  Speech.stop();
+  Speech.speak(text, { language: 'ko-KR', rate: 1.05, pitch: 1.0 });
+}
 
 // 세 필터 모두 Kakao 로컬 검색 사용
 // 경사로: 단일 키워드가 없어 여러 키워드를 병렬 조회 후 합산
@@ -78,199 +85,196 @@ function buildMapHTML(lat: number, lng: number): string {
 <html>
 <head>
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"/>
-  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+  <script type="text/javascript" src="https://dapi.kakao.com/v2/maps/sdk.js?appkey=${KAKAO_JS_KEY}"></script>
   <style>
     * { margin: 0; padding: 0; box-sizing: border-box; }
-    body { width: 100vw; height: 100vh; overflow: hidden; }
+    html, body { width: 100%; height: 100%; overflow: hidden; }
     #map { width: 100%; height: 100%; }
-    .leaflet-control-attribution { font-size: 9px; }
-    .obstacle-icon img {
-      width: 44px; height: 44px;
-      border-radius: 50%;
-      border: 3px solid #FF5722;
-      object-fit: cover;
-    }
   </style>
 </head>
 <body>
   <div id="map"></div>
   <script>
-    var map = L.map('map', { zoomControl: false }).setView([${lat}, ${lng}], 16);
-
-    L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', {
-      maxZoom: 19,
-      attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>'
-    }).addTo(map);
+    var map = new kakao.maps.Map(document.getElementById('map'), {
+      center: new kakao.maps.LatLng(${lat}, ${lng}),
+      level: 3
+    });
 
     var accuracyCircle = null;
     var currentHeading = 0;
     var hasHeading = false;
+    var userOverlay = null;
+    var obstacleOverlays = {};
+    var obstacleData = {};
+    var routePolyline = null;
+    var destOverlay = null;
+    var facilityOverlays = [];
+    var maneuverOverlays = [];
 
-    function buildLocationIcon(heading, showHeading) {
+    function buildLocationSVG(heading, showHeading) {
       var svg = '<svg width="80" height="80" viewBox="0 0 80 80" xmlns="http://www.w3.org/2000/svg">';
       if (showHeading) {
         svg += '<g transform="rotate(' + heading + ', 40, 40)">'
           + '<path d="M40,40 L23,10 A 30 30 0 0 1 57,10 Z" fill="rgba(66,133,244,0.25)" stroke="rgba(66,133,244,0.6)" stroke-width="1" stroke-linejoin="round"/>'
           + '</g>';
       }
-      svg += '<circle cx="40" cy="40" r="10" fill="#4285F4" stroke="white" stroke-width="3"/>'
-        + '</svg>';
-      return L.divIcon({
-        html: svg,
-        className: '',
-        iconSize: [80, 80],
-        iconAnchor: [40, 40]
-      });
+      svg += '<circle cx="40" cy="40" r="10" fill="#4285F4" stroke="white" stroke-width="3"/></svg>';
+      return svg;
     }
 
-    var marker = L.marker([${lat}, ${lng}], {
-      icon: buildLocationIcon(0, false),
-      zIndexOffset: 1000
-    }).addTo(map);
-
-    var obstacleMarkers = {};
-    var routeLayer = null;
-    var destMarker = null;
-
-    // ── 시설 마커 ───────────────────────────────────────────────
-    var facilityMarkers = [];
-    function clearFacilityMarkers(type) {
-      if (!type) {
-        facilityMarkers.forEach(function(m) { map.removeLayer(m.marker); });
-        facilityMarkers = [];
-      } else {
-        facilityMarkers = facilityMarkers.filter(function(m) {
-          if (m.type === type) { map.removeLayer(m.marker); return false; }
-          return true;
-        });
-      }
-    }
-    function addFacilityMarker(lat, lng, type) {
-      var cfg = { elevator:{e:'🛗',c:'#2196F3'}, ramp:{e:'♿',c:'#4CAF50'}, toilet:{e:'🚻',c:'#9C27B0'}, slope:{e:'⚠️',c:'#FF5722'} }[type] || {e:'📍',c:'#607D8B'};
-      var icon = L.divIcon({
-        html: '<div style="width:34px;height:34px;border-radius:50%;background:'+cfg.c+';display:flex;align-items:center;justify-content:center;font-size:17px;border:2.5px solid white;box-shadow:0 2px 6px rgba(0,0,0,0.35);">'+cfg.e+'</div>',
-        className:'', iconSize:[34,34], iconAnchor:[17,17]
-      });
-      facilityMarkers.push({ marker: L.marker([lat,lng],{icon:icon}).addTo(map), type: type });
-    }
-
-    // ── 경로 회전 마커 ──────────────────────────────────────────
-    var maneuverMarkers = [];
-    function clearManeuverMarkers() {
-      maneuverMarkers.forEach(function(m){ map.removeLayer(m); });
-      maneuverMarkers = [];
-    }
-    function addManeuverMarker(lat, lng, arrow, distStr) {
-      var icon = L.divIcon({
-        html: '<div style="background:#1a1a1a;color:white;border-radius:8px;padding:3px 8px;font-size:12px;font-weight:700;white-space:nowrap;box-shadow:0 2px 5px rgba(0,0,0,0.4);">'+arrow+' '+distStr+'</div>',
-        className:'', iconAnchor:[0,10]
-      });
-      maneuverMarkers.push(L.marker([lat,lng],{icon:icon}).addTo(map));
-    }
-
-    function drawRoute(coords, color) {
-      if (routeLayer) map.removeLayer(routeLayer);
-      var latlngs = coords.map(function(c) { return [c[1], c[0]]; });
-      routeLayer = L.polyline(latlngs, {
-        color: color || '#4285F4',
-        weight: 5,
-        opacity: 0.85,
-        lineCap: 'round',
-        lineJoin: 'round'
-      }).addTo(map);
-      map.fitBounds(routeLayer.getBounds(), { padding: [80, 80] });
-    }
-
-    function clearRoute() {
-      if (routeLayer) { map.removeLayer(routeLayer); routeLayer = null; }
-      if (destMarker) { map.removeLayer(destMarker); destMarker = null; }
-    }
-
-    function addDestMarker(lat, lng) {
-      if (destMarker) map.removeLayer(destMarker);
-      var icon = L.divIcon({
-        html: '<div style="width:18px;height:18px;border-radius:50%;background:#FF5722;border:3px solid white;box-shadow:0 2px 5px rgba(0,0,0,0.4);"></div>',
-        className: '',
-        iconSize: [18, 18],
-        iconAnchor: [9, 9]
-      });
-      destMarker = L.marker([lat, lng], { icon: icon }).addTo(map);
-    }
+    userOverlay = new kakao.maps.CustomOverlay({
+      position: new kakao.maps.LatLng(${lat}, ${lng}),
+      content: '<div style="width:80px;height:80px;">' + buildLocationSVG(0, false) + '</div>',
+      xAnchor: 0.5,
+      yAnchor: 0.5,
+      zIndex: 10
+    });
+    userOverlay.setMap(map);
 
     function updateLocation(lat, lng, accuracy) {
-      marker.setLatLng([lat, lng]);
-      if (accuracyCircle) {
-        map.removeLayer(accuracyCircle);
+      var pos = new kakao.maps.LatLng(lat, lng);
+      if (userOverlay) {
+        userOverlay.setPosition(pos);
+        userOverlay.setContent('<div style="width:80px;height:80px;">' + buildLocationSVG(currentHeading, hasHeading) + '</div>');
       }
+      if (accuracyCircle) accuracyCircle.setMap(null);
       if (accuracy && accuracy < 500) {
-        accuracyCircle = L.circle([lat, lng], {
+        accuracyCircle = new kakao.maps.Circle({
+          center: pos,
           radius: accuracy,
-          color: '#4285F4',
+          strokeWeight: 1,
+          strokeColor: '#4285F4',
+          strokeOpacity: 0.5,
           fillColor: '#4285F4',
-          fillOpacity: 0.08,
-          weight: 1
-        }).addTo(map);
+          fillOpacity: 0.08
+        });
+        accuracyCircle.setMap(map);
       }
     }
 
     function updateHeading(heading) {
       currentHeading = heading;
       hasHeading = true;
-      marker.setIcon(buildLocationIcon(currentHeading, true));
+      if (userOverlay) {
+        userOverlay.setContent('<div style="width:80px;height:80px;">' + buildLocationSVG(heading, true) + '</div>');
+      }
     }
 
     function flyToLocation(lat, lng) {
-      map.flyTo([lat, lng], 16, { animate: true, duration: 1 });
+      map.setCenter(new kakao.maps.LatLng(lat, lng));
+    }
+
+    function onObstacleClick(id) {
+      var d = obstacleData[id];
+      if (!d) return;
+      window.ReactNativeWebView.postMessage(JSON.stringify({
+        type: 'obstacleClick',
+        id: id,
+        lat: d.lat,
+        lng: d.lng,
+        photoUri: d.photoUri,
+        createdAt: d.createdAt
+      }));
     }
 
     function addObstacleMarker(id, lat, lng, photoUri, createdAt) {
-      if (obstacleMarkers[id]) {
-        map.removeLayer(obstacleMarkers[id]);
-      }
-
-      var iconHtml = '<div style="position:relative;width:50px;height:60px;">' +
-        '<div style="position:absolute;top:0;left:3px;width:44px;height:44px;border-radius:50%;border:3px solid #FF5722;overflow:hidden;background:#eee;">' +
-        '<img src="' + photoUri + '" style="width:100%;height:100%;object-fit:cover;" />' +
-        '</div>' +
-        '<div style="position:absolute;bottom:0;left:50%;transform:translateX(-50%);width:0;height:0;border-left:8px solid transparent;border-right:8px solid transparent;border-top:14px solid #FF5722;"></div>' +
-        '</div>';
-
-      var icon = L.divIcon({
-        html: iconHtml,
-        className: '',
-        iconSize: [50, 60],
-        iconAnchor: [25, 60],
-        popupAnchor: [0, -62]
+      if (obstacleOverlays[id]) obstacleOverlays[id].setMap(null);
+      obstacleData[id] = { lat: lat, lng: lng, photoUri: photoUri, createdAt: createdAt };
+      var iconHtml = '<div style="position:relative;width:50px;height:60px;cursor:pointer;" onclick="onObstacleClick(' + id + ');">'
+        + '<div style="position:absolute;top:0;left:3px;width:44px;height:44px;border-radius:50%;border:3px solid #FF5722;overflow:hidden;background:#eee;">'
+        + '<img src="' + photoUri + '" style="width:100%;height:100%;object-fit:cover;"/>'
+        + '</div>'
+        + '<div style="position:absolute;bottom:0;left:50%;transform:translateX(-50%);width:0;height:0;border-left:8px solid transparent;border-right:8px solid transparent;border-top:14px solid #FF5722;"></div>'
+        + '</div>';
+      var overlay = new kakao.maps.CustomOverlay({
+        position: new kakao.maps.LatLng(lat, lng),
+        content: iconHtml,
+        xAnchor: 0.5,
+        yAnchor: 1,
+        zIndex: 5
       });
-
-      var m = L.marker([lat, lng], { icon: icon }).addTo(map);
-      m.on('click', function() {
-        window.ReactNativeWebView.postMessage(JSON.stringify({
-          type: 'obstacleClick',
-          id: id,
-          lat: lat,
-          lng: lng,
-          photoUri: photoUri,
-          createdAt: createdAt
-        }));
-      });
-      obstacleMarkers[id] = m;
+      overlay.setMap(map);
+      obstacleOverlays[id] = overlay;
     }
 
     function clearObstacleMarkers() {
-      Object.values(obstacleMarkers).forEach(function(m) {
-        map.removeLayer(m);
-      });
-      obstacleMarkers = {};
+      Object.values(obstacleOverlays).forEach(function(o) { o.setMap(null); });
+      obstacleOverlays = {};
+      obstacleData = {};
     }
 
-    document.addEventListener('message', function(e) {
-      handleMessage(e.data);
-    });
-    window.addEventListener('message', function(e) {
-      handleMessage(e.data);
-    });
+    function addFacilityMarker(lat, lng, type) {
+      var cfg = { elevator:{e:'🛗',c:'#2196F3'}, ramp:{e:'♿',c:'#4CAF50'}, toilet:{e:'🚻',c:'#9C27B0'}, slope:{e:'⚠️',c:'#FF5722'} }[type] || {e:'📍',c:'#607D8B'};
+      var content = '<div style="width:34px;height:34px;border-radius:50%;background:'+cfg.c+';display:flex;align-items:center;justify-content:center;font-size:17px;border:2.5px solid white;box-shadow:0 2px 6px rgba(0,0,0,0.35);">'+cfg.e+'</div>';
+      var overlay = new kakao.maps.CustomOverlay({
+        position: new kakao.maps.LatLng(lat, lng),
+        content: content,
+        xAnchor: 0.5,
+        yAnchor: 0.5
+      });
+      overlay.setMap(map);
+      facilityOverlays.push({ overlay: overlay, type: type });
+    }
+
+    function clearFacilityMarkers(type) {
+      if (!type) {
+        facilityOverlays.forEach(function(f) { f.overlay.setMap(null); });
+        facilityOverlays = [];
+      } else {
+        facilityOverlays = facilityOverlays.filter(function(f) {
+          if (f.type === type) { f.overlay.setMap(null); return false; }
+          return true;
+        });
+      }
+    }
+
+    function addManeuverMarker(lat, lng, arrow, distStr) {
+      var content = '<div style="background:#1a1a1a;color:white;border-radius:8px;padding:3px 8px;font-size:12px;font-weight:700;white-space:nowrap;box-shadow:0 2px 5px rgba(0,0,0,0.4);">' + arrow + ' ' + distStr + '</div>';
+      var overlay = new kakao.maps.CustomOverlay({
+        position: new kakao.maps.LatLng(lat, lng),
+        content: content
+      });
+      overlay.setMap(map);
+      maneuverOverlays.push(overlay);
+    }
+
+    function clearManeuverMarkers() {
+      maneuverOverlays.forEach(function(o) { o.setMap(null); });
+      maneuverOverlays = [];
+    }
+
+    function drawRoute(coords, color) {
+      if (routePolyline) routePolyline.setMap(null);
+      var path = coords.map(function(c) { return new kakao.maps.LatLng(c[1], c[0]); });
+      routePolyline = new kakao.maps.Polyline({
+        path: path,
+        strokeWeight: 5,
+        strokeColor: color || '#4285F4',
+        strokeOpacity: 0.85,
+        strokeStyle: 'solid'
+      });
+      routePolyline.setMap(map);
+      map.setBounds(routePolyline.getBounds(), 80, 80, 80, 80);
+    }
+
+    function clearRoute() {
+      if (routePolyline) { routePolyline.setMap(null); routePolyline = null; }
+      if (destOverlay) { destOverlay.setMap(null); destOverlay = null; }
+    }
+
+    function addDestMarker(lat, lng) {
+      if (destOverlay) destOverlay.setMap(null);
+      destOverlay = new kakao.maps.CustomOverlay({
+        position: new kakao.maps.LatLng(lat, lng),
+        content: '<div style="width:18px;height:18px;border-radius:50%;background:#FF5722;border:3px solid white;box-shadow:0 2px 5px rgba(0,0,0,0.4);"></div>',
+        xAnchor: 0.5,
+        yAnchor: 0.5
+      });
+      destOverlay.setMap(map);
+    }
+
+    document.addEventListener('message', function(e) { handleMessage(e.data); });
+    window.addEventListener('message', function(e) { handleMessage(e.data); });
 
     function handleMessage(data) {
       try {
@@ -326,7 +330,7 @@ export default function MapScreen({ navigation }: any) {
   // 길찾기 상태
   const [showSearch, setShowSearch] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
-  const [searchResults, setSearchResults] = useState<{ display_name: string; lat: string; lon: string }[]>([]);
+  const [searchResults, setSearchResults] = useState<{ display_name: string; address: string; lat: string; lon: string }[]>([]);
   const [searching, setSearching] = useState(false);
   const [destination, setDestination] = useState('');
   const [destCoords, setDestCoords] = useState<{ lat: number; lng: number } | null>(null);
@@ -344,6 +348,42 @@ export default function MapScreen({ navigation }: any) {
   // 필터 상태
   const [activeFilters, setActiveFilters] = useState<Set<string>>(new Set());
   const [filterLoading, setFilterLoading] = useState<string | null>(null);
+
+  // TTS: 내비게이션 시작/종료 (항상 한국어 레이블 사용)
+  useEffect(() => {
+    if (isNavigating && maneuvers.length > 0) {
+      const first = maneuvers[0];
+      const label = getManeuverLabel(first.type);
+      const dist = first.length > 0 ? `${Math.round(first.length * 1000)}미터 후 ` : '';
+      speak(`안내를 시작합니다. ${dist}${label}`);
+    } else if (!isNavigating) {
+      Speech.stop();
+    }
+  }, [isNavigating]);
+
+  // TTS: 단계 변경 시 다음 지시 안내 (항상 한국어 레이블 사용)
+  const prevManeuverIdxRef = useRef(-1);
+  useEffect(() => {
+    if (!isNavigating || maneuvers.length === 0) return;
+    if (currentManeuverIdx === prevManeuverIdxRef.current) return;
+    prevManeuverIdxRef.current = currentManeuverIdx;
+    const step = maneuvers[currentManeuverIdx];
+    if (!step) return;
+    const label = getManeuverLabel(step.type);
+    const nextStep = maneuvers[currentManeuverIdx + 1];
+    if (nextStep) {
+      const nextDist = nextStep.length > 0 ? `${Math.round(nextStep.length * 1000)}미터 후 ` : '';
+      const nextLabel = getManeuverLabel(nextStep.type);
+      speak(`${label}. ${nextDist}${nextLabel}`);
+    } else {
+      speak(label);
+    }
+  }, [currentManeuverIdx, isNavigating]);
+
+  // TTS: 경로 이탈 재탐색
+  useEffect(() => {
+    if (isRerouting) speak('경로를 이탈했습니다. 경로를 재탐색합니다.');
+  }, [isRerouting]);
 
   // 내비게이션 업데이트 함수를 ref에 저장 (stale closure 방지)
   const navUpdateRef = useRef<(lat: number, lng: number) => void>(() => {});
@@ -371,6 +411,17 @@ export default function MapScreen({ navigation }: any) {
       for (let i = maneuvers.length - 1; i >= 0; i--) {
         if (minIdx >= maneuvers[i].beginShapeIndex) { mIdx = i; break; }
       }
+
+      // 목적지 도착 감지 (마지막 단계 + 10m 이내)
+      const lastStep = maneuvers[maneuvers.length - 1];
+      if (lastStep && haversine(userLat, userLng, lastStep.lat, lastStep.lng) < 10) {
+        speak('목적지에 도착했습니다.');
+        setIsNavigating(false);
+        setManeuvers([]);
+        setRoutePoints([]);
+        return;
+      }
+
       setCurrentManeuverIdx(mIdx);
 
       // 다음 회전까지 거리
@@ -380,7 +431,7 @@ export default function MapScreen({ navigation }: any) {
 
       // 내비 중 지도 사용자 중심 유지
       webViewRef.current?.injectJavaScript(
-        `map.setView([${userLat},${userLng}], 18, {animate:true}); true;`
+        `flyToLocation(${userLat}, ${userLng}); true;`
       );
     };
   }, [isNavigating, routePoints, maneuvers, isRerouting, destCoords]);
@@ -390,12 +441,18 @@ export default function MapScreen({ navigation }: any) {
     Keyboard.dismiss();
     setSearching(true);
     try {
+      const locParam = location ? `&x=${location.lng}&y=${location.lat}&sort=distance` : '';
       const res = await fetch(
-        `https://nominatim.openstreetmap.org/search?q=${encodeURIComponent(searchQuery)}&format=json&limit=6&countrycodes=kr&accept-language=ko`,
-        { headers: { 'User-Agent': 'FlatRoadApp/1.0' } }
+        `https://dapi.kakao.com/v2/local/search/keyword.json?query=${encodeURIComponent(searchQuery)}&size=10${locParam}`,
+        { headers: { Authorization: `KakaoAK ${KAKAO_KEY}` } }
       );
       const data = await res.json();
-      setSearchResults(data);
+      setSearchResults((data.documents ?? []).map((doc: any) => ({
+        display_name: doc.place_name,
+        address: doc.road_address_name || doc.address_name || '',
+        lat: doc.y,
+        lon: doc.x,
+      })));
     } catch {
       Alert.alert('오류', '검색 중 문제가 발생했습니다.');
     } finally {
@@ -444,44 +501,61 @@ export default function MapScreen({ navigation }: any) {
     setRouteLoading(true);
     try {
       if (mode === 'safe') {
-        // ── Valhalla 전동휠체어 경로 (인도·경사·노면·폭 고려) ──────
-        const body = {
+        // ── 안전 보행 경로: Valhalla pedestrian + 장애물 우회 ─────
+        const bufDeg = 0.015; // 경로 주변 ~1.5km 버퍼
+        const avoidLocs = obstacles
+          .filter(o =>
+            o.latitude  >= Math.min(fromLat, toLat)  - bufDeg &&
+            o.latitude  <= Math.max(fromLat, toLat)  + bufDeg &&
+            o.longitude >= Math.min(fromLng, toLng)  - bufDeg &&
+            o.longitude <= Math.max(fromLng, toLng)  + bufDeg
+          )
+          .slice(0, 50)
+          .map(o => ({ lat: o.latitude, lon: o.longitude }));
+
+        const body: Record<string, any> = {
           locations: [
             { lon: fromLng, lat: fromLat },
             { lon: toLng, lat: toLat },
           ],
-          costing: 'wheelchair',
+          costing: 'pedestrian',
           costing_options: {
-            wheelchair: {
-              max_distance: 20000,
-              walking_speed: 4.0,
-              // 계단 완전 회피
-              step_penalty: 300,
-              // 좁은 골목 회피
-              alley_factor: 5.0,
-              // 인도·보행자 도로 우선
-              walkway_factor: 0.8,
-              use_living_streets: 0.3,
-              // 경사도 3% 이상 경로 패널티
+            pedestrian: {
+              walking_speed: 4.5,
+              step_penalty: 30,
+              alley_factor: 2.0,
+              use_roads: 0.5,
+              use_hills: 0.5,
               max_hiking_difficulty: 1,
             },
           },
           units: 'km',
+          language: 'ko',
         };
-        const res = await fetch('https://valhalla1.openstreetmap.de/route', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(body),
-        });
-        const data = await res.json();
+        if (avoidLocs.length > 0) body.avoid_locations = avoidLocs;
+
+        const ctrl = new AbortController();
+        const timer = setTimeout(() => ctrl.abort(), 15000);
+        let data: any;
+        try {
+          const res = await fetch('https://valhalla1.openstreetmap.de/route', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(body),
+            signal: ctrl.signal,
+          });
+          data = await res.json();
+        } finally {
+          clearTimeout(timer);
+        }
+
         if (data.error || !data.trip?.legs?.length) {
-          // Valhalla 실패 시 OSRM foot 폴백
           await fetchOsrmRoute(fromLat, fromLng, toLat, toLng, 'foot', '#4285F4', 'safe');
           return;
         }
         const leg = data.trip.legs[0];
-        const latlngs = decodePolyline(leg.shape);           // [[lat,lng],...]
-        const geoCoords = latlngs.map(([la, lo]) => [lo, la]); // GeoJSON [lng,lat]
+        const latlngs = decodePolyline(leg.shape);
+        const geoCoords = latlngs.map(([la, lo]) => [lo, la]);
         const distKm = data.trip.summary.length as number;
         const durSec = data.trip.summary.time as number;
         const distStr = distKm >= 1 ? `${distKm.toFixed(1)}km` : `${Math.round(distKm * 1000)}m`;
@@ -494,10 +568,9 @@ export default function MapScreen({ navigation }: any) {
           `drawRoute(${JSON.stringify(geoCoords)}, '#4285F4'); true;`
         );
 
-        // 회전 지시 파싱
-        const parsedManeuvers: ManeuverStep[] = (data.trip.legs[0].maneuvers ?? []).map((m: any) => ({
+        const parsedManeuvers: ManeuverStep[] = (leg.maneuvers ?? []).map((m: any) => ({
           type: m.type,
-          instruction: m.instruction ?? getManeuverLabel(m.type),
+          instruction: getManeuverLabel(m.type),
           length: m.length ?? 0,
           beginShapeIndex: m.begin_shape_index ?? 0,
           lat: latlngs[m.begin_shape_index]?.[0] ?? fromLat,
@@ -508,7 +581,6 @@ export default function MapScreen({ navigation }: any) {
         setCurrentManeuverIdx(0);
         setDistToNextTurn(parsedManeuvers[1] ? Math.round(parsedManeuvers[0].length * 1000) : 0);
 
-        // 회전 마커 지도에 표시
         webViewRef.current?.injectJavaScript(`clearManeuverMarkers(); true;`);
         parsedManeuvers.slice(0, -1).forEach((step, i) => {
           if (i >= 8) return;
@@ -519,10 +591,9 @@ export default function MapScreen({ navigation }: any) {
           );
         });
 
-        // 경사·계단 경고 비동기 로드
         fetchSlopeWarnings(latlngs);
       } else {
-        // ── 일반 경로: OSRM driving ──────────────────────────────
+        // ── 일반 경로: OSRM driving (자동차) ────────────────────
         await fetchOsrmRoute(fromLat, fromLng, toLat, toLng, 'driving', '#888888', 'normal');
       }
     } catch {
@@ -537,10 +608,18 @@ export default function MapScreen({ navigation }: any) {
     toLat: number, toLng: number,
     profile: string, color: string, mode: 'safe' | 'normal'
   ) => {
-    const res = await fetch(
-      `https://router.project-osrm.org/route/v1/${profile}/${fromLng},${fromLat};${toLng},${toLat}?geometries=geojson&overview=full`
-    );
-    const data = await res.json();
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => ctrl.abort(), 15000);
+    let data: any;
+    try {
+      const res = await fetch(
+        `https://router.project-osrm.org/route/v1/${profile}/${fromLng},${fromLat};${toLng},${toLat}?geometries=geojson&overview=full`,
+        { signal: ctrl.signal }
+      );
+      data = await res.json();
+    } finally {
+      clearTimeout(timer);
+    }
     if (data.code !== 'Ok' || !data.routes?.length) {
       Alert.alert('오류', '경로를 찾을 수 없습니다.');
       return;
@@ -659,10 +738,10 @@ export default function MapScreen({ navigation }: any) {
     }
   };
 
-  const selectDestination = async (item: { display_name: string; lat: string; lon: string }) => {
+  const selectDestination = async (item: { display_name: string; address: string; lat: string; lon: string }) => {
     setShowSearch(false);
     setSearchResults([]);
-    const shortName = item.display_name.split(',')[0].trim();
+    const shortName = item.display_name;
     setDestination(shortName);
     const toLat = parseFloat(item.lat);
     const toLng = parseFloat(item.lon);
@@ -847,7 +926,7 @@ export default function MapScreen({ navigation }: any) {
       <WebView
         ref={webViewRef}
         style={StyleSheet.absoluteFill}
-        source={{ html: buildMapHTML(initLat, initLng) }}
+        source={{ html: buildMapHTML(initLat, initLng), baseUrl: 'http://localhost' }}
         originWhitelist={['*']}
         javaScriptEnabled
         domStorageEnabled
@@ -937,7 +1016,7 @@ export default function MapScreen({ navigation }: any) {
             </View>
             <TouchableOpacity
               style={styles.navClose}
-              onPress={() => { setIsNavigating(false); setManeuvers([]); setRoutePoints([]); }}
+              onPress={() => { setIsNavigating(false); setManeuvers([]); setRoutePoints([]); Speech.stop(); }}
               hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
             >
               <MaterialIcons name="close" size={20} color="#fff" />
@@ -1049,7 +1128,7 @@ export default function MapScreen({ navigation }: any) {
         {isNavigating && (
           <TouchableOpacity
             style={styles.stopNavBtn}
-            onPress={() => { setIsNavigating(false); setManeuvers([]); setRoutePoints([]); }}
+            onPress={() => { setIsNavigating(false); setManeuvers([]); setRoutePoints([]); Speech.stop(); }}
             activeOpacity={0.8}
           >
             <MaterialIcons name="stop" size={18} color="#e53935" />
@@ -1104,10 +1183,10 @@ export default function MapScreen({ navigation }: any) {
                   <MaterialIcons name="place" size={20} color="#FF5722" style={{ marginTop: 2 }} />
                   <View style={{ flex: 1 }}>
                     <Text style={styles.searchResultMain} numberOfLines={1}>
-                      {item.display_name.split(',')[0].trim()}
+                      {item.display_name}
                     </Text>
                     <Text style={styles.searchResultSub} numberOfLines={1}>
-                      {item.display_name}
+                      {item.address}
                     </Text>
                   </View>
                 </TouchableOpacity>
