@@ -25,3 +25,7 @@ async def create_tables():
         await conn.execute(text(
             "ALTER TABLE obstacles ADD COLUMN IF NOT EXISTS ai_detections TEXT"
         ))
+        # photo_url NOT NULL 제약 해제 (Firebase 미설정 환경 지원)
+        await conn.execute(text(
+            "ALTER TABLE obstacles ALTER COLUMN photo_url DROP NOT NULL"
+        ))

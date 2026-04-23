@@ -283,7 +283,13 @@ export default function ContributeScreen() {
                   activeOpacity={0.75}
                 >
                   <View style={styles.thumbWrap}>
+                    {item.photoUri ? (
                     <Image source={{ uri: item.photoUri }} style={styles.obstacleThumb} />
+                  ) : (
+                    <View style={[styles.obstacleThumb, { alignItems: 'center', justifyContent: 'center', backgroundColor: '#f0f0f0' }]}>
+                      <Text style={{ fontSize: 24 }}>⚠️</Text>
+                    </View>
+                  )}
                     {hasAI && (
                       <View style={styles.aiThumbBadge}>
                         <Text style={styles.aiThumbBadgeText}>AI</Text>
@@ -355,11 +361,18 @@ export default function ContributeScreen() {
                   <>
                     {/* 이미지 + 바운딩 박스 오버레이 */}
                     <View style={[styles.detailImgWrap, { width: imgW, height: imgH }]}>
-                      <Image
-                        source={{ uri: selectedItem.photoUri }}
-                        style={{ width: imgW, height: imgH, borderRadius: 10 }}
-                        resizeMode="cover"
-                      />
+                      {selectedItem.photoUri ? (
+                        <Image
+                          source={{ uri: selectedItem.photoUri }}
+                          style={{ width: imgW, height: imgH, borderRadius: 10 }}
+                          resizeMode="cover"
+                        />
+                      ) : (
+                        <View style={{ width: imgW, height: imgH, borderRadius: 10, backgroundColor: '#f0f0f0', alignItems: 'center', justifyContent: 'center' }}>
+                          <Text style={{ fontSize: 48 }}>⚠️</Text>
+                          <Text style={{ color: '#888', marginTop: 8 }}>사진 없음</Text>
+                        </View>
+                      )}
                       {detections.length > 0 && (
                         <View style={{ position: 'absolute', left: 0, top: 0, width: imgW, height: imgH }}>
                           <DetectionOverlay detections={detections} imgWidth={imgW} imgHeight={imgH} />
