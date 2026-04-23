@@ -1,6 +1,6 @@
 # FlatRoad 백엔드 실행 가이드
 
-> 담당자: 이재행 | 2026-04-20
+> 담당자: 이재행 | 최종 수정: 2026-04-23
 
 ---
 
@@ -13,38 +13,69 @@ cd "C:\Users\leejh\OneDrive\바탕 화면\4-1\종합프로젝트\FlatRoad\backen
 
 정상 실행 시 출력:
 ```
-[YOLO] 모델 로드 완료 — 클래스: ['Bollard']
+[Detectron2] AIHub 커스텀 앵커 적용: [[0.65, 1.0, 2.47, 5.2, 18.12]]
+[Detectron2] 모델 로드 완료 — classes=13, device=cpu
 INFO: Uvicorn running on http://0.0.0.0:8000
-INFO: Application startup complete.
 ```
 
 ---
 
 ## 최초 설치 순서
 
-### 1. Python 가상환경 생성 및 패키지 설치
+### 1. Python 가상환경 생성
+
 ```powershell
 cd "C:\Users\leejh\OneDrive\바탕 화면\4-1\종합프로젝트\FlatRoad\backend"
 python -m venv venv
 ./venv/Scripts/pip install -r requirements.txt
 ```
 
-### 2. PostgreSQL (이미 완료)
-- PostgreSQL 17 설치됨 (winget)
-- DB: `flatroad` 생성 완료
-- 계정: `postgres` / 비밀번호: `0000`
+### 2. PyTorch + Detectron2 설치 (CPU 환경)
 
-### 3. 환경변수 설정 (이미 완료)
-`.env` 파일 내용:
+```powershell
+./venv/Scripts/pip install torch torchvision
+./venv/Scripts/pip install detectron2 -f https://dl.fbaipublicfiles.com/detectron2/wheels/cpu/torch2.0/index.html
+```
+
+GPU(CUDA 11.8) 환경:
+
+```powershell
+./venv/Scripts/pip install torch torchvision --index-url https://download.pytorch.org/whl/cu118
+./venv/Scripts/pip install detectron2 -f https://dl.fbaipublicfiles.com/detectron2/wheels/cu118/torch2.0/index.html
+```
+
+### 3. AI 모델 파일 배치
+
+`retinanet_r_50_fpn_3x_aihub_final.pth` 파일을 **프로젝트 루트** (backend/ 상위)에 위치:
+
+```text
+FlatRoad/
+├── retinanet_r_50_fpn_3x_aihub_final.pth   ← 여기
+└── backend/
+    └── ...
+```
+
+### 4. PostgreSQL
+
+- PostgreSQL 17 설치
+- DB: `safe_route_db` 생성
+- `.env` 의 `DATABASE_URL` 수정
+
+### 5. 환경변수 설정
+
+`backend/.env`:
+
 ```ini
-DATABASE_URL=postgresql+asyncpg://postgres:0000@localhost:5432/flatroad
+DATABASE_URL=postgresql+asyncpg://postgres:비밀번호@localhost:5432/safe_route_db
 FIREBASE_CREDENTIALS_PATH=./firebase-adminsdk.json
 FIREBASE_STORAGE_BUCKET=map2026-233a5.firebasestorage.app
-YOLO_MODEL=./best.pt
+DETECTRON2_WEIGHTS=../retinanet_r_50_fpn_3x_aihub_final.pth
+DETECTRON2_SCORE_THRESH=0.5
 PORT=8000
 ```
 
-### 4. Firebase 서비스 계정 (이미지 업로드 기능)
+### 6. Firebase 서비스 계정 (이미지 업로드)
+
 1. console.firebase.google.com → 프로젝트 `map2026-233a5`
 2. 프로젝트 설정 → 서비스 계정 → 새 비공개 키 생성
 3. 다운로드 파일 → `backend/firebase-adminsdk.json` 저장
@@ -53,23 +84,17 @@ PORT=8000
 
 ## Expo Go 앱 연동
 
-### 전제 조건
-- PC와 폰이 **같은 WiFi** 연결
-- PC WiFi IP: `192.168.0.40`
+- PC와 폰을 **같은 WiFi**에 연결
+- 루트 `.env`의 `EXPO_PUBLIC_API_BASE_URL`을 PC의 WiFi IP로 수정
 
-### 방화벽 허용 (관리자 PowerShell, 최초 1회)
+방화벽 허용 (관리자 PowerShell, 최초 1회):
+
 ```powershell
 New-NetFirewallRule -DisplayName 'FlatRoad Backend 8000' -Direction Inbound -Protocol TCP -LocalPort 8000 -Action Allow
 ```
 
-### 연결 확인
-폰 브라우저에서 접속:
-```
-http://192.168.0.40:8000
-```
-`{"status":"ok","yolo_ready":true}` 응답 확인
+앱 실행:
 
-### 앱 실행 (프로젝트 루트)
 ```powershell
 cd "C:\Users\leejh\OneDrive\바탕 화면\4-1\종합프로젝트\FlatRoad"
 npm start
@@ -77,15 +102,9 @@ npm start
 
 ---
 
-## API 문서
-서버 실행 후: `http://localhost:8000/docs`
+## API 목록
 
-## AI 모델 상태 확인
-```
-GET http://localhost:8000/api/analyze/status
-```
-
-## 전체 API 목록
+서버 실행 후 Swagger UI: `http://localhost:8000/docs`
 
 | 메서드 | 경로 | 설명 |
 |--------|------|------|
@@ -102,4 +121,4 @@ GET http://localhost:8000/api/analyze/status
 | POST | /api/community/posts/{id}/comments | 댓글 작성 |
 | DELETE | /api/community/comments/{id} | 댓글 삭제 |
 | POST | /api/analyze | 이미지 AI 분석 |
-| GET | /api/analyze/status | AI 모델 상태 |
+| GET | /api/analyze/status | AI 모델 상태 (classes 13개 확인) |

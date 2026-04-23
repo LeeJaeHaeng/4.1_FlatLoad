@@ -24,6 +24,7 @@ class ObstacleOut(BaseModel):
     dislikes: int
     aiLabel: Optional[str] = None
     aiConfidence: Optional[float] = None
+    aiDetections: Optional[list] = None  # [{label,confidence,bbox:[cx,cy,w,h]}]
 
     model_config = {"from_attributes": True}
 

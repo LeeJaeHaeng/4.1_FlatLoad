@@ -1,5 +1,6 @@
 from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession, async_sessionmaker
 from sqlalchemy.orm import DeclarativeBase
+from sqlalchemy import text
 from dotenv import load_dotenv
 import os
 
@@ -20,3 +21,7 @@ async def get_db():
 async def create_tables():
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
+        # 신규 컬럼 마이그레이션 (기존 DB 호환)
+        await conn.execute(text(
+            "ALTER TABLE obstacles ADD COLUMN IF NOT EXISTS ai_detections TEXT"
+        ))

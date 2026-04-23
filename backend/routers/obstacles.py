@@ -1,14 +1,22 @@
+import asyncio
+import json
 from fastapi import APIRouter, Depends, UploadFile, File, Form, HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, func, update
 from db.database import get_db
 from db.models import Obstacle, Vote
 from db.schemas import ObstacleOut, VoteRequest, VoteOut, TopContributor
-from services import storage, yolo
+from services import storage, detector
 
 router = APIRouter(prefix="/api/obstacles", tags=["obstacles"])
 
 def _to_out(row: Obstacle) -> ObstacleOut:
+    detections = None
+    if row.ai_detections:
+        try:
+            detections = json.loads(row.ai_detections)
+        except Exception:
+            pass
     return ObstacleOut(
         id=row.id,
         photoUri=row.photo_url,
@@ -22,6 +30,7 @@ def _to_out(row: Obstacle) -> ObstacleOut:
         dislikes=row.dislikes,
         aiLabel=row.ai_label,
         aiConfidence=row.ai_confidence,
+        aiDetections=detections,
     )
 
 
@@ -43,30 +52,38 @@ async def create_obstacle(
 ):
     image_bytes = await photo.read()
 
-    # Firebase Storage 업로드
-    photo_url = await storage.upload_image(image_bytes, photo.content_type or "image/jpeg")
-
-    # YOLOv4 분석 (모델 준비된 경우만)
-    ai_label, ai_confidence = None, None
-    if yolo.YOLO_READY:
+    # Firebase 업로드 + Detectron2 추론 병렬 실행 (속도 최적화)
+    async def _safe_detect() -> list:
+        if not detector.MODEL_READY:
+            return []
         try:
-            detections = yolo.detect(image_bytes)
-            if detections:
-                top = detections[0]
-                ai_label      = top["label"]
-                ai_confidence = top["confidence"]
+            return await asyncio.to_thread(detector.detect, image_bytes)
         except Exception as e:
-            print(f"[YOLO] 분석 실패: {e}")
+            print(f"[Detectron2] 분석 실패: {e}")
+            return []
+
+    photo_url, detections = await asyncio.gather(
+        storage.upload_image(image_bytes, photo.content_type or "image/jpeg"),
+        _safe_detect(),
+    )
+
+    ai_label, ai_confidence, ai_detections_json = None, None, None
+    if detections:
+        top = detections[0]
+        ai_label      = top["label"]
+        ai_confidence = top["confidence"]
+        ai_detections_json = json.dumps(detections, ensure_ascii=False)
 
     obs = Obstacle(
-        photo_url    = photo_url,
-        latitude     = latitude,
-        longitude    = longitude,
-        user_id      = user_id,
-        user_email   = user_email,
-        display_name = display_name,
-        ai_label     = ai_label,
-        ai_confidence= ai_confidence,
+        photo_url     = photo_url,
+        latitude      = latitude,
+        longitude     = longitude,
+        user_id       = user_id,
+        user_email    = user_email,
+        display_name  = display_name,
+        ai_label      = ai_label,
+        ai_confidence = ai_confidence,
+        ai_detections = ai_detections_json,
     )
     db.add(obs)
     await db.commit()

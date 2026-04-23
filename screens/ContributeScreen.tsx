@@ -8,6 +8,8 @@ import {
   Alert,
   ActivityIndicator,
   ScrollView,
+  Modal,
+  Dimensions,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import AsyncStorage from '@react-native-async-storage/async-storage';
@@ -26,12 +28,55 @@ import {
   apiCreateObstacle,
   apiGetMyObstacles,
   apiGetTopContributors,
+  ApiObstacle,
 } from '../utils/api';
 import { useAuth } from '../context/AuthContext';
 
 type Screen = 'list' | 'camera' | 'preview';
 
+type Detection = { label: string; confidence: number; bbox: [number, number, number, number] };
+
 const MEDAL = ['🥇', '🥈', '🥉'];
+const LABEL_KO: Record<string, string> = {
+  person: '사람', pole: '전봇대', bollard: '볼라드', tree_trunk: '나무',
+  car: '자동차', traffic_light: '신호등', truck: '트럭', bus: '버스',
+  traffic_sign: '표지판', motorcycle: '오토바이', movable_signage: '이동간판',
+  potted_plant: '화분', wheelchair: '휠체어',
+};
+const BBOX_COLORS = [
+  '#FF5722', '#2196F3', '#4CAF50', '#FF9800', '#9C27B0',
+  '#00BCD4', '#F44336', '#3F51B5', '#8BC34A', '#FF5252',
+];
+
+const { width: SCREEN_W } = Dimensions.get('window');
+
+function DetectionOverlay({ detections, imgWidth, imgHeight }: {
+  detections: Detection[];
+  imgWidth: number;
+  imgHeight: number;
+}) {
+  return (
+    <>
+      {detections.map((d, i) => {
+        const [cx, cy, bw, bh] = d.bbox;
+        const x = (cx - bw / 2) * imgWidth;
+        const y = (cy - bh / 2) * imgHeight;
+        const color = BBOX_COLORS[i % BBOX_COLORS.length];
+        const label = LABEL_KO[d.label] ?? d.label;
+        return (
+          <View key={i} style={{ position: 'absolute', left: x, top: y, width: bw * imgWidth, height: bh * imgHeight }}>
+            <View style={{ position: 'absolute', inset: 0, borderWidth: 2, borderColor: color, borderRadius: 3 }} />
+            <View style={{ position: 'absolute', top: -22, left: 0, backgroundColor: color, borderRadius: 4, paddingHorizontal: 5, paddingVertical: 2 }}>
+              <Text style={{ color: '#fff', fontSize: 11, fontWeight: '700' }}>
+                {label} {Math.round(d.confidence * 100)}%
+              </Text>
+            </View>
+          </View>
+        );
+      })}
+    </>
+  );
+}
 
 export default function ContributeScreen() {
   const { user } = useAuth();
@@ -46,6 +91,8 @@ export default function ContributeScreen() {
   const [myObstacles, setMyObstacles] = useState<ObstacleRecord[]>([]);
   const [topContributors, setTopContributors] = useState<TopContributor[]>([]);
   const [listLoading, setListLoading] = useState(true);
+  const [selectedItem, setSelectedItem] = useState<ObstacleRecord | null>(null);
+  const [detailImgSize, setDetailImgSize] = useState({ w: SCREEN_W - 48, h: 240 });
 
   useEffect(() => {
     AsyncStorage.getItem('settings.muteShutter').then((val) => {
@@ -118,7 +165,6 @@ export default function ContributeScreen() {
         loc = await Location.getCurrentPositionAsync({ accuracy: Location.Accuracy.Balanced });
       }
 
-      // 백엔드 API로 저장 (AI 분석 포함) — 실패 시 로컬 SQLite 폴백
       let aiLabel: string | null = null;
       let aiConfidence: number | null = null;
       try {
@@ -133,7 +179,6 @@ export default function ContributeScreen() {
         aiLabel = result.aiLabel;
         aiConfidence = result.aiConfidence;
       } catch {
-        // 서버 연결 실패 시 로컬 저장
         await saveObstacle(
           capturedUri,
           loc.coords.latitude,
@@ -144,8 +189,9 @@ export default function ContributeScreen() {
         );
       }
 
-      const aiMsg = aiLabel
-        ? `\n\n🤖 AI 분석 결과: ${aiLabel} (신뢰도 ${Math.round((aiConfidence ?? 0) * 100)}%)`
+      const labelKo = aiLabel ? (LABEL_KO[aiLabel] ?? aiLabel) : null;
+      const aiMsg = labelKo
+        ? `\n\n🤖 AI 감지: ${labelKo} (신뢰도 ${Math.round((aiConfidence ?? 0) * 100)}%)`
         : '';
       Alert.alert('저장 완료', `장애물 정보가 저장되었습니다.${aiMsg}`, [
         {
@@ -167,6 +213,20 @@ export default function ContributeScreen() {
   const handleCancel = () => {
     setCapturedUri(null);
     setScreen('list');
+  };
+
+  const openDetail = (item: ObstacleRecord) => {
+    setSelectedItem(item);
+    // 이미지 원본 비율로 표시 크기 계산
+    const maxW = SCREEN_W - 48;
+    Image.getSize(
+      item.photoUri,
+      (w, h) => {
+        const ratio = h / w;
+        setDetailImgSize({ w: maxW, h: Math.min(maxW * ratio, 360) });
+      },
+      () => setDetailImgSize({ w: maxW, h: 240 })
+    );
   };
 
   // ── 목록 화면 ───────────────────────────────────────────────────
@@ -212,27 +272,57 @@ export default function ContributeScreen() {
               <Text style={styles.emptyText}>아직 기여한 장애물이 없습니다</Text>
             </View>
           ) : (
-            myObstacles.map((item) => (
-              <View key={item.id} style={styles.obstacleItem}>
-                <Image source={{ uri: item.photoUri }} style={styles.obstacleThumb} />
-                <View style={styles.obstacleInfo}>
-                  <Text style={styles.obstacleDate}>
-                    {new Date(item.createdAt).toLocaleDateString('ko-KR', {
-                      year: 'numeric', month: 'long', day: 'numeric',
-                    })}
-                  </Text>
-                  <Text style={styles.obstacleCoords}>
-                    {item.latitude.toFixed(5)}, {item.longitude.toFixed(5)}
-                  </Text>
-                  <View style={styles.obstacleVotes}>
-                    <MaterialIcons name="thumb-up" size={13} color="#4285F4" />
-                    <Text style={styles.obstacleVoteText}>{item.likes}</Text>
-                    <MaterialIcons name="thumb-down" size={13} color="#e53935" style={{ marginLeft: 8 }} />
-                    <Text style={styles.obstacleVoteText}>{item.dislikes}</Text>
+            myObstacles.map((item) => {
+              const detections: Detection[] = (item as any).aiDetections ?? [];
+              const hasAI = detections.length > 0 || !!(item as any).aiLabel;
+              return (
+                <TouchableOpacity
+                  key={item.id}
+                  style={styles.obstacleItem}
+                  onPress={() => openDetail(item)}
+                  activeOpacity={0.75}
+                >
+                  <View style={styles.thumbWrap}>
+                    <Image source={{ uri: item.photoUri }} style={styles.obstacleThumb} />
+                    {hasAI && (
+                      <View style={styles.aiThumbBadge}>
+                        <Text style={styles.aiThumbBadgeText}>AI</Text>
+                      </View>
+                    )}
                   </View>
-                </View>
-              </View>
-            ))
+                  <View style={styles.obstacleInfo}>
+                    <Text style={styles.obstacleDate}>
+                      {new Date(item.createdAt).toLocaleDateString('ko-KR', {
+                        year: 'numeric', month: 'long', day: 'numeric',
+                      })}
+                    </Text>
+                    <Text style={styles.obstacleCoords}>
+                      {item.latitude.toFixed(5)}, {item.longitude.toFixed(5)}
+                    </Text>
+                    {(item as any).aiLabel && (
+                      <View style={styles.aiLabelRow}>
+                        <Text style={styles.aiLabelText}>
+                          🤖 {LABEL_KO[(item as any).aiLabel] ?? (item as any).aiLabel}
+                          {(item as any).aiConfidence
+                            ? ` · ${Math.round((item as any).aiConfidence * 100)}%`
+                            : ''}
+                        </Text>
+                      </View>
+                    )}
+                    <View style={styles.obstacleVotes}>
+                      <MaterialIcons name="thumb-up" size={13} color="#4285F4" />
+                      <Text style={styles.obstacleVoteText}>{item.likes}</Text>
+                      <MaterialIcons name="thumb-down" size={13} color="#e53935" style={{ marginLeft: 8 }} />
+                      <Text style={styles.obstacleVoteText}>{item.dislikes}</Text>
+                      {detections.length > 1 && (
+                        <Text style={styles.moreDetectText}> · +{detections.length - 1}개 더</Text>
+                      )}
+                    </View>
+                  </View>
+                  <MaterialIcons name="chevron-right" size={20} color="#ccc" />
+                </TouchableOpacity>
+              );
+            })
           )}
         </ScrollView>
 
@@ -241,6 +331,82 @@ export default function ContributeScreen() {
           <MaterialIcons name="camera-alt" size={26} color="#fff" />
           <Text style={styles.fabText}>촬영하기</Text>
         </TouchableOpacity>
+
+        {/* 상세 보기 모달 (감지 결과 시각화) */}
+        <Modal
+          visible={!!selectedItem}
+          animationType="slide"
+          transparent
+          onRequestClose={() => setSelectedItem(null)}
+        >
+          <View style={styles.detailOverlay}>
+            <View style={styles.detailCard}>
+              <View style={styles.detailHeader}>
+                <Text style={styles.detailTitle}>장애물 상세</Text>
+                <TouchableOpacity onPress={() => setSelectedItem(null)} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
+                  <MaterialIcons name="close" size={24} color="#333" />
+                </TouchableOpacity>
+              </View>
+
+              {selectedItem && (() => {
+                const detections: Detection[] = (selectedItem as any).aiDetections ?? [];
+                const { w: imgW, h: imgH } = detailImgSize;
+                return (
+                  <>
+                    {/* 이미지 + 바운딩 박스 오버레이 */}
+                    <View style={[styles.detailImgWrap, { width: imgW, height: imgH }]}>
+                      <Image
+                        source={{ uri: selectedItem.photoUri }}
+                        style={{ width: imgW, height: imgH, borderRadius: 10 }}
+                        resizeMode="cover"
+                      />
+                      {detections.length > 0 && (
+                        <View style={{ position: 'absolute', left: 0, top: 0, width: imgW, height: imgH }}>
+                          <DetectionOverlay detections={detections} imgWidth={imgW} imgHeight={imgH} />
+                        </View>
+                      )}
+                      {detections.length === 0 && (
+                        <View style={styles.noAiOverlay}>
+                          <Text style={styles.noAiText}>AI 감지 없음</Text>
+                        </View>
+                      )}
+                    </View>
+
+                    {/* 감지 목록 */}
+                    {detections.length > 0 && (
+                      <View style={styles.detectList}>
+                        <Text style={styles.detectListTitle}>감지된 객체</Text>
+                        {detections.map((d, i) => (
+                          <View key={i} style={styles.detectRow}>
+                            <View style={[styles.detectDot, { backgroundColor: BBOX_COLORS[i % BBOX_COLORS.length] }]} />
+                            <Text style={styles.detectLabel}>{LABEL_KO[d.label] ?? d.label}</Text>
+                            <View style={styles.detectBar}>
+                              <View style={[styles.detectBarFill, {
+                                width: `${Math.round(d.confidence * 100)}%` as any,
+                                backgroundColor: BBOX_COLORS[i % BBOX_COLORS.length],
+                              }]} />
+                            </View>
+                            <Text style={styles.detectPct}>{Math.round(d.confidence * 100)}%</Text>
+                          </View>
+                        ))}
+                      </View>
+                    )}
+
+                    {/* 메타 정보 */}
+                    <View style={styles.detailMeta}>
+                      <Text style={styles.detailMetaText}>
+                        📅 {new Date(selectedItem.createdAt).toLocaleString('ko-KR')}
+                      </Text>
+                      <Text style={styles.detailMetaText}>
+                        📍 {selectedItem.latitude.toFixed(6)}, {selectedItem.longitude.toFixed(6)}
+                      </Text>
+                    </View>
+                  </>
+                );
+              })()}
+            </View>
+          </View>
+        </Modal>
       </SafeAreaView>
     );
   }
@@ -296,7 +462,9 @@ export default function ContributeScreen() {
       <View style={styles.previewOverlay} />
       <SafeAreaView style={styles.previewContent}>
         <Text style={styles.previewTitle}>촬영된 사진</Text>
-        <Text style={styles.previewSub}>이 사진을 저장하시겠습니까?{'\n'}저장 시 현재 위치와 날짜가 함께 기록됩니다.</Text>
+        <Text style={styles.previewSub}>
+          이 사진을 저장하시겠습니까?{'\n'}저장 시 현재 위치와 날짜가 함께 기록되며{'\n'}AI가 자동으로 장애물을 분석합니다.
+        </Text>
         <View style={styles.previewButtons}>
           <TouchableOpacity
             style={[styles.previewBtn, styles.cancelBtn]}
@@ -312,7 +480,10 @@ export default function ContributeScreen() {
             disabled={saving}
           >
             {saving ? (
-              <ActivityIndicator color="#fff" size="small" />
+              <>
+                <ActivityIndicator color="#fff" size="small" />
+                <Text style={styles.previewBtnText}>AI 분석 중...</Text>
+              </>
             ) : (
               <>
                 <MaterialIcons name="save" size={20} color="#fff" />
@@ -342,12 +513,7 @@ const styles = StyleSheet.create({
     shadowRadius: 4,
     elevation: 2,
   },
-  leaderTitle: {
-    fontSize: 16,
-    fontWeight: 'bold',
-    color: '#222',
-    marginBottom: 12,
-  },
+  leaderTitle: { fontSize: 16, fontWeight: 'bold', color: '#222', marginBottom: 12 },
   leaderEmpty: { fontSize: 13, color: '#bbb', textAlign: 'center', paddingVertical: 8 },
   leaderRow: {
     flexDirection: 'row',
@@ -365,18 +531,14 @@ const styles = StyleSheet.create({
   leaderLikeCount: { fontSize: 15, fontWeight: 'bold', color: '#4285F4' },
 
   // 내 기여 목록
-  sectionTitle: {
-    fontSize: 15,
-    fontWeight: 'bold',
-    color: '#333',
-    marginBottom: 10,
-  },
+  sectionTitle: { fontSize: 15, fontWeight: 'bold', color: '#333', marginBottom: 10 },
   loginPrompt: { alignItems: 'center', paddingVertical: 32, gap: 8 },
   loginPromptText: { fontSize: 13, color: '#aaa', textAlign: 'center' },
   emptyWrap: { alignItems: 'center', paddingVertical: 32, gap: 8 },
   emptyText: { fontSize: 13, color: '#aaa' },
   obstacleItem: {
     flexDirection: 'row',
+    alignItems: 'center',
     backgroundColor: '#fff',
     borderRadius: 14,
     marginBottom: 10,
@@ -386,13 +548,34 @@ const styles = StyleSheet.create({
     shadowOpacity: 0.06,
     shadowRadius: 3,
     elevation: 2,
+    paddingRight: 10,
   },
+  thumbWrap: { position: 'relative', width: 90, height: 90 },
   obstacleThumb: { width: 90, height: 90, backgroundColor: '#eee' },
-  obstacleInfo: { flex: 1, padding: 12, justifyContent: 'center', gap: 4 },
+  aiThumbBadge: {
+    position: 'absolute',
+    top: 4,
+    right: 4,
+    backgroundColor: '#FF5722',
+    borderRadius: 8,
+    paddingHorizontal: 5,
+    paddingVertical: 1,
+  },
+  aiThumbBadgeText: { color: '#fff', fontSize: 9, fontWeight: '800' },
+  obstacleInfo: { flex: 1, padding: 12, justifyContent: 'center', gap: 3 },
   obstacleDate: { fontSize: 13, fontWeight: '600', color: '#333' },
   obstacleCoords: { fontSize: 11, color: '#999' },
-  obstacleVotes: { flexDirection: 'row', alignItems: 'center', gap: 4, marginTop: 4 },
+  aiLabelRow: {
+    backgroundColor: '#FFF3E0',
+    borderRadius: 6,
+    paddingHorizontal: 6,
+    paddingVertical: 2,
+    alignSelf: 'flex-start',
+  },
+  aiLabelText: { fontSize: 11, color: '#E65100', fontWeight: '600' },
+  obstacleVotes: { flexDirection: 'row', alignItems: 'center', gap: 4, marginTop: 2 },
   obstacleVoteText: { fontSize: 12, color: '#555', fontWeight: '600' },
+  moreDetectText: { fontSize: 11, color: '#9C27B0', fontWeight: '600' },
 
   // FAB
   fab: {
@@ -413,6 +596,69 @@ const styles = StyleSheet.create({
     gap: 8,
   },
   fabText: { color: '#fff', fontWeight: 'bold', fontSize: 15 },
+
+  // 상세 모달
+  detailOverlay: {
+    flex: 1,
+    backgroundColor: 'rgba(0,0,0,0.55)',
+    justifyContent: 'flex-end',
+  },
+  detailCard: {
+    backgroundColor: '#fff',
+    borderTopLeftRadius: 24,
+    borderTopRightRadius: 24,
+    padding: 20,
+    paddingBottom: 36,
+    maxHeight: '90%',
+  },
+  detailHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: 16,
+  },
+  detailTitle: { fontSize: 17, fontWeight: '700', color: '#1a1a1a' },
+  detailImgWrap: {
+    alignSelf: 'center',
+    borderRadius: 10,
+    overflow: 'hidden',
+    marginBottom: 16,
+    backgroundColor: '#eee',
+  },
+  noAiOverlay: {
+    position: 'absolute',
+    bottom: 8,
+    right: 8,
+    backgroundColor: 'rgba(0,0,0,0.5)',
+    borderRadius: 6,
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+  },
+  noAiText: { color: '#fff', fontSize: 11 },
+
+  // 감지 목록
+  detectList: { marginBottom: 12 },
+  detectListTitle: { fontSize: 13, fontWeight: '700', color: '#555', marginBottom: 8 },
+  detectRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    marginBottom: 6,
+  },
+  detectDot: { width: 10, height: 10, borderRadius: 5 },
+  detectLabel: { fontSize: 13, color: '#333', width: 80 },
+  detectBar: {
+    flex: 1,
+    height: 6,
+    backgroundColor: '#f0f0f0',
+    borderRadius: 3,
+    overflow: 'hidden',
+  },
+  detectBarFill: { height: 6, borderRadius: 3 },
+  detectPct: { fontSize: 12, color: '#666', width: 32, textAlign: 'right' },
+
+  detailMeta: { gap: 4, marginTop: 4 },
+  detailMetaText: { fontSize: 12, color: '#999' },
 
   // 카메라
   fullScreen: { flex: 1, backgroundColor: '#000' },
