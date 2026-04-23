@@ -180,9 +180,12 @@ function buildMapHTML(lat: number, lng: number): string {
     function addObstacleMarker(id, lat, lng, photoUri, createdAt) {
       if (obstacleOverlays[id]) obstacleOverlays[id].setMap(null);
       obstacleData[id] = { lat: lat, lng: lng, photoUri: photoUri, createdAt: createdAt };
+      var photoContent = photoUri
+        ? '<img src="' + photoUri + '" style="width:100%;height:100%;object-fit:cover;"/>'
+        : '<div style="width:100%;height:100%;display:flex;align-items:center;justify-content:center;font-size:20px;">⚠️</div>';
       var iconHtml = '<div style="position:relative;width:50px;height:60px;cursor:pointer;" onclick="onObstacleClick(' + id + ');">'
         + '<div style="position:absolute;top:0;left:3px;width:44px;height:44px;border-radius:50%;border:3px solid #FF5722;overflow:hidden;background:#eee;">'
-        + '<img src="' + photoUri + '" style="width:100%;height:100%;object-fit:cover;"/>'
+        + photoContent
         + '</div>'
         + '<div style="position:absolute;bottom:0;left:50%;transform:translateX(-50%);width:0;height:0;border-left:8px solid transparent;border-right:8px solid transparent;border-top:14px solid #FF5722;"></div>'
         + '</div>';
@@ -1207,11 +1210,18 @@ export default function MapScreen({ navigation }: any) {
           <View style={styles.modalOverlay}>
             <View style={styles.modalCard}>
               <Text style={styles.modalTitle}>장애물 정보</Text>
-              <Image
-                source={{ uri: selectedObstacle.photoUri }}
-                style={styles.modalImage}
-                resizeMode="cover"
-              />
+              {selectedObstacle.photoUri ? (
+                <Image
+                  source={{ uri: selectedObstacle.photoUri }}
+                  style={styles.modalImage}
+                  resizeMode="cover"
+                />
+              ) : (
+                <View style={[styles.modalImage, { alignItems: 'center', justifyContent: 'center', backgroundColor: '#f0f0f0' }]}>
+                  <Text style={{ fontSize: 40 }}>⚠️</Text>
+                  <Text style={{ color: '#888', fontSize: 12, marginTop: 4 }}>사진 없음</Text>
+                </View>
+              )}
               <View style={styles.modalInfo}>
                 <Text style={styles.modalLabel}>촬영 일시</Text>
                 <Text style={styles.modalValue}>
