@@ -14,6 +14,7 @@ import {
 import { SafeAreaView } from 'react-native-safe-area-context';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { CameraView, CameraType, useCameraPermissions } from 'expo-camera';
+import * as ImagePicker from 'expo-image-picker';
 import { MaterialIcons } from '@expo/vector-icons';
 import * as Location from 'expo-location';
 import { useFocusEffect } from '@react-navigation/native';
@@ -50,6 +51,17 @@ const BBOX_COLORS = [
 
 const { width: SCREEN_W } = Dimensions.get('window');
 
+function parseExifDate(dateStr: string): Date | null {
+  const m = dateStr.match(/^(\d{4}):(\d{2}):(\d{2}) (\d{2}):(\d{2}):(\d{2})/);
+  if (!m) return null;
+  return new Date(`${m[1]}-${m[2]}-${m[3]}T${m[4]}:${m[5]}:${m[6]}`);
+}
+
+function gpsToDecimal(value: number | number[], ref: string): number {
+  const dec = Array.isArray(value) ? value[0] + value[1] / 60 + value[2] / 3600 : value;
+  return ref === 'S' || ref === 'W' ? -dec : dec;
+}
+
 function DetectionOverlay({ detections, imgWidth, imgHeight }: {
   detections: Detection[];
   imgWidth: number;
@@ -85,6 +97,7 @@ export default function ContributeScreen() {
   const [facing, setFacing] = useState<CameraType>('back');
   const [muted, setMuted] = useState(false);
   const [capturedUri, setCapturedUri] = useState<string | null>(null);
+  const [exifCoords, setExifCoords] = useState<{ latitude: number; longitude: number } | null>(null);
   const [saving, setSaving] = useState(false);
   const cameraRef = useRef<CameraView>(null);
 
@@ -136,6 +149,60 @@ export default function ContributeScreen() {
     setScreen('camera');
   };
 
+  const pickFromGallery = async () => {
+    const { status } = await ImagePicker.requestMediaLibraryPermissionsAsync();
+    if (status !== 'granted') {
+      Alert.alert('권한 필요', '갤러리 접근 권한이 필요합니다.');
+      return;
+    }
+
+    const result = await ImagePicker.launchImageLibraryAsync({
+      mediaTypes: ImagePicker.MediaTypeOptions.Images,
+      exif: true,
+      quality: 0.8,
+    });
+    if (result.canceled) return;
+
+    const asset = result.assets[0];
+    const exif = asset.exif as Record<string, any> | undefined;
+
+    if (!exif) {
+      Alert.alert('업로드 불가', 'EXIF 데이터가 없는 사진입니다.\n카메라 앱으로 직접 촬영한 사진을 사용해주세요.');
+      return;
+    }
+
+    const rawDate = exif.DateTimeOriginal ?? exif.DateTime;
+    if (!rawDate) {
+      Alert.alert('업로드 불가', '사진에 촬영 날짜 정보가 없습니다.\n카메라 앱으로 직접 촬영한 사진을 사용해주세요.');
+      return;
+    }
+    const takenAt = parseExifDate(String(rawDate));
+    if (!takenAt) {
+      Alert.alert('업로드 불가', '촬영 날짜를 읽을 수 없습니다.\n지원되지 않는 날짜 형식입니다.');
+      return;
+    }
+    const diffHours = (Date.now() - takenAt.getTime()) / (1000 * 60 * 60);
+    if (diffHours > 48) {
+      Alert.alert(
+        '업로드 불가',
+        `촬영된 지 48시간이 지난 사진입니다.\n\n촬영 시각: ${takenAt.toLocaleString('ko-KR')}\n\n최근 48시간 이내에 촬영한 사진만 업로드할 수 있습니다.`
+      );
+      return;
+    }
+
+    if (exif.GPSLatitude == null || exif.GPSLongitude == null) {
+      Alert.alert('업로드 불가', '사진에 위치 정보(GPS)가 없습니다.\n카메라 설정에서 위치 태그를 켜고 다시 촬영해주세요.');
+      return;
+    }
+
+    const latitude = gpsToDecimal(exif.GPSLatitude, exif.GPSLatitudeRef ?? 'N');
+    const longitude = gpsToDecimal(exif.GPSLongitude, exif.GPSLongitudeRef ?? 'E');
+
+    setExifCoords({ latitude, longitude });
+    setCapturedUri(asset.uri);
+    setScreen('preview');
+  };
+
   const takePicture = async () => {
     if (!cameraRef.current) return;
     try {
@@ -153,16 +220,24 @@ export default function ContributeScreen() {
     if (!capturedUri) return;
     setSaving(true);
     try {
-      const { status } = await Location.requestForegroundPermissionsAsync();
-      if (status !== 'granted') {
-        Alert.alert('권한 필요', '위치 접근 권한이 필요합니다.');
-        setSaving(false);
-        return;
-      }
+      let latitude: number;
+      let longitude: number;
 
-      let loc = await Location.getLastKnownPositionAsync({ maxAge: 60_000, requiredAccuracy: 100 });
-      if (!loc) {
-        loc = await Location.getCurrentPositionAsync({ accuracy: Location.Accuracy.Balanced });
+      if (exifCoords) {
+        ({ latitude, longitude } = exifCoords);
+      } else {
+        const { status } = await Location.requestForegroundPermissionsAsync();
+        if (status !== 'granted') {
+          Alert.alert('권한 필요', '위치 접근 권한이 필요합니다.');
+          setSaving(false);
+          return;
+        }
+        let loc = await Location.getLastKnownPositionAsync({ maxAge: 60_000, requiredAccuracy: 100 });
+        if (!loc) {
+          loc = await Location.getCurrentPositionAsync({ accuracy: Location.Accuracy.Balanced });
+        }
+        latitude = loc.coords.latitude;
+        longitude = loc.coords.longitude;
       }
 
       let aiLabel: string | null = null;
@@ -170,8 +245,8 @@ export default function ContributeScreen() {
       try {
         const result = await apiCreateObstacle(
           capturedUri,
-          loc.coords.latitude,
-          loc.coords.longitude,
+          latitude,
+          longitude,
           user?.uid ?? '',
           user?.email ?? '',
           user?.displayName ?? ''
@@ -181,8 +256,8 @@ export default function ContributeScreen() {
       } catch {
         await saveObstacle(
           capturedUri,
-          loc.coords.latitude,
-          loc.coords.longitude,
+          latitude,
+          longitude,
           user?.uid ?? '',
           user?.email ?? '',
           user?.displayName ?? ''
