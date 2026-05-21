@@ -4,7 +4,7 @@ from fastapi.staticfiles import StaticFiles
 from contextlib import asynccontextmanager
 from pathlib import Path
 from db.database import create_tables
-from routers import obstacles, community, analyze
+from routers import obstacles, community, analyze, admin
 from services import detector
 
 
@@ -27,6 +27,7 @@ app.add_middleware(
 app.include_router(obstacles.router)
 app.include_router(community.router)
 app.include_router(analyze.router)
+app.include_router(admin.router)
 
 uploads_dir = Path(__file__).parent / "uploads"
 uploads_dir.mkdir(exist_ok=True)

@@ -1,4 +1,4 @@
-from sqlalchemy import Column, Integer, String, Float, DateTime, Text, UniqueConstraint, func
+from sqlalchemy import Column, Integer, String, Float, DateTime, Text, Boolean, UniqueConstraint, func
 from db.database import Base
 
 class Obstacle(Base):
@@ -17,6 +17,7 @@ class Obstacle(Base):
     ai_label      = Column(String, nullable=True)
     ai_confidence = Column(Float, nullable=True)
     ai_detections = Column(Text, nullable=True)   # JSON: [{label,confidence,bbox}]
+    is_approved   = Column(Boolean, nullable=False, default=True)
 
 
 class Vote(Base):

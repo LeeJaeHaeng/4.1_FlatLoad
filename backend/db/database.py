@@ -29,3 +29,6 @@ async def create_tables():
         await conn.execute(text(
             "ALTER TABLE obstacles ALTER COLUMN photo_url DROP NOT NULL"
         ))
+        await conn.execute(text(
+            "ALTER TABLE obstacles ADD COLUMN IF NOT EXISTS is_approved BOOLEAN NOT NULL DEFAULT TRUE"
+        ))
