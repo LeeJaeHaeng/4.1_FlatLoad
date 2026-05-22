@@ -14,6 +14,7 @@ const navItems = [
   { href: "/",           icon: "📊", label: "대시보드" },
   { href: "/obstacles",  icon: "🚧", label: "장애물 관리" },
   { href: "/posts",      icon: "💬", label: "게시글 관리" },
+  { href: "/certified",  icon: "⭐", label: "인증 사용자" },
 ];
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {

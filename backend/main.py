@@ -1,9 +1,13 @@
-from fastapi import FastAPI
+from fastapi import FastAPI, Depends
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from contextlib import asynccontextmanager
 from pathlib import Path
-from db.database import create_tables
+from datetime import datetime, timezone
+from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy import select
+from db.database import create_tables, get_db
+from db.models import CertifiedUser
 from routers import obstacles, community, analyze, admin
 from services import detector
 
@@ -40,4 +44,26 @@ async def root():
         "status": "ok",
         "model_ready": detector.MODEL_READY,
         "classes": detector.class_names,
+    }
+
+
+@app.post("/api/certified/verify")
+async def verify_certified_key(body: dict, db: AsyncSession = Depends(get_db)):
+    key = body.get("api_key", "")
+    if not key:
+        return {"valid": False}
+    result = await db.execute(select(CertifiedUser).where(CertifiedUser.api_key == key))
+    user = result.scalar_one_or_none()
+    if not user:
+        return {"valid": False}
+    now = datetime.now(timezone.utc)
+    expires = user.expires_at.replace(tzinfo=timezone.utc) if user.expires_at.tzinfo is None else user.expires_at
+    days_left = (expires - now).days
+    if days_left <= 0:
+        return {"valid": False, "reason": "expired"}
+    return {
+        "valid": True,
+        "name": user.name,
+        "affiliation": user.affiliation,
+        "daysLeft": days_left,
     }

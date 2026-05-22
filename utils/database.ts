@@ -31,6 +31,7 @@ export interface Post {
   createdAt: string;
   likes: number;
   commentCount: number;
+  isCertified: boolean;
 }
 
 export interface Comment {
@@ -41,6 +42,7 @@ export interface Comment {
   userEmail: string;
   displayName: string;
   createdAt: string;
+  isCertified: boolean;
 }
 
 // ── 싱글턴 초기화 (race condition 방지) ────────────────────────────
@@ -105,6 +107,8 @@ async function initDatabase(): Promise<SQLite.SQLiteDatabase> {
     `ALTER TABLE obstacles ADD COLUMN displayName TEXT NOT NULL DEFAULT '';`,
     `ALTER TABLE obstacles ADD COLUMN likes INTEGER NOT NULL DEFAULT 0;`,
     `ALTER TABLE obstacles ADD COLUMN dislikes INTEGER NOT NULL DEFAULT 0;`,
+    `ALTER TABLE posts ADD COLUMN isCertified INTEGER NOT NULL DEFAULT 0;`,
+    `ALTER TABLE comments ADD COLUMN isCertified INTEGER NOT NULL DEFAULT 0;`,
   ];
   for (const sql of migrations) {
     try { await database.execAsync(sql); } catch { /* 이미 존재 */ }
@@ -276,12 +280,13 @@ export async function getPosts(): Promise<Post[]> {
 
 export async function createPost(
   title: string, content: string,
-  userId: string, userEmail: string, displayName: string
+  userId: string, userEmail: string, displayName: string,
+  isCertified: boolean = false
 ): Promise<number> {
   const database = await getDatabase();
   const result = await database.runAsync(
-    `INSERT INTO posts (title, content, userId, userEmail, displayName, createdAt) VALUES (?, ?, ?, ?, ?, ?)`,
-    [title, content, userId, userEmail, displayName, new Date().toISOString()]
+    `INSERT INTO posts (title, content, userId, userEmail, displayName, createdAt, isCertified) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+    [title, content, userId, userEmail, displayName, new Date().toISOString(), isCertified ? 1 : 0]
   );
   return result.lastInsertRowId;
 }
@@ -326,12 +331,13 @@ export async function getComments(postId: number): Promise<Comment[]> {
 
 export async function addComment(
   postId: number, content: string,
-  userId: string, userEmail: string, displayName: string
+  userId: string, userEmail: string, displayName: string,
+  isCertified: boolean = false
 ): Promise<number> {
   const database = await getDatabase();
   const result = await database.runAsync(
-    `INSERT INTO comments (postId, content, userId, userEmail, displayName, createdAt) VALUES (?, ?, ?, ?, ?, ?)`,
-    [postId, content, userId, userEmail, displayName, new Date().toISOString()]
+    `INSERT INTO comments (postId, content, userId, userEmail, displayName, createdAt, isCertified) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+    [postId, content, userId, userEmail, displayName, new Date().toISOString(), isCertified ? 1 : 0]
   );
   return result.lastInsertRowId;
 }

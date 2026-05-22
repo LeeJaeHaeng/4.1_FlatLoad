@@ -72,3 +72,53 @@ export async function deletePost(id: number): Promise<void> {
 export async function deleteComment(id: number): Promise<void> {
   await fetch(`${API}/admin/comments/${id}`, { method: "DELETE" });
 }
+
+// ── 인증된 사용자 ─────────────────────────────────────────────────
+
+export interface CertifiedUser {
+  id: number;
+  name: string;
+  affiliation: string;
+  apiKey: string;
+  createdAt: string;
+  expiresAt: string;
+  daysLeft: number;
+}
+
+export async function getCertifiedUsers(): Promise<CertifiedUser[]> {
+  const res = await fetch(`${API}/admin/certified`, { cache: "no-store" });
+  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  const data = await res.json();
+  return Array.isArray(data) ? data : [];
+}
+
+export async function createCertifiedUser(
+  name: string,
+  affiliation: string
+): Promise<{ id: number; name: string; affiliation: string; apiKey: string; expiresAt: string }> {
+  const res = await fetch(`${API}/admin/certified`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ name, affiliation }),
+  });
+  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  return res.json();
+}
+
+export async function updateCertifiedUser(
+  id: number,
+  name: string,
+  affiliation: string
+): Promise<CertifiedUser> {
+  const res = await fetch(`${API}/admin/certified/${id}`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ name, affiliation }),
+  });
+  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  return res.json();
+}
+
+export async function deleteCertifiedUser(id: number): Promise<void> {
+  await fetch(`${API}/admin/certified/${id}`, { method: "DELETE" });
+}

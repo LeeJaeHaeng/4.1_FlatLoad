@@ -25,6 +25,7 @@ export interface ApiObstacle {
   aiLabel: string | null;
   aiConfidence: number | null;
   aiDetections: { label: string; confidence: number; bbox: [number, number, number, number] }[] | null;
+  isCertified: boolean;
 }
 
 // ── 장애물 ────────────────────────────────────────────────────────
@@ -41,7 +42,8 @@ export async function apiCreateObstacle(
   longitude: number,
   userId: string,
   userEmail: string,
-  displayName: string
+  displayName: string,
+  certifiedKey: string = ''
 ): Promise<ApiObstacle> {
   const form = new FormData();
   form.append('photo', { uri: photoUri, name: 'obstacle.jpg', type: 'image/jpeg' } as any);
@@ -50,6 +52,7 @@ export async function apiCreateObstacle(
   form.append('user_id', userId);
   form.append('user_email', userEmail);
   form.append('display_name', displayName);
+  if (certifiedKey) form.append('certified_key', certifiedKey);
 
   const res = await apiFetch(`${API_BASE_URL}/api/obstacles`, { method: 'POST', body: form }, 30000);
   if (!res.ok) throw new Error('장애물 등록 실패');
@@ -104,12 +107,17 @@ export async function apiGetPosts() {
 
 export async function apiCreatePost(
   title: string, content: string,
-  userId: string, userEmail: string, displayName: string
+  userId: string, userEmail: string, displayName: string,
+  certifiedKey: string = ''
 ) {
   const res = await apiFetch(`${API_BASE_URL}/api/community/posts`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ title, content, user_id: userId, user_email: userEmail, display_name: displayName }),
+    body: JSON.stringify({
+      title, content,
+      user_id: userId, user_email: userEmail, display_name: displayName,
+      certified_key: certifiedKey,
+    }),
   });
   if (!res.ok) throw new Error('게시글 작성 실패');
   return res.json();
@@ -146,12 +154,16 @@ export async function apiGetComments(postId: number) {
 
 export async function apiAddComment(
   postId: number, content: string,
-  userId: string, userEmail: string, displayName: string
+  userId: string, userEmail: string, displayName: string,
+  certifiedKey: string = ''
 ) {
   const res = await apiFetch(`${API_BASE_URL}/api/community/posts/${postId}/comments`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ content, user_id: userId, user_email: userEmail, display_name: displayName }),
+    body: JSON.stringify({
+      content, user_id: userId, user_email: userEmail, display_name: displayName,
+      certified_key: certifiedKey,
+    }),
   });
   if (!res.ok) throw new Error('댓글 작성 실패');
   return res.json();

@@ -2,6 +2,34 @@ from pydantic import BaseModel
 from datetime import datetime
 from typing import Optional
 
+# ── 인증된 사용자 ────────────────────────────────────────────────────
+
+class CertifiedUserCreate(BaseModel):
+    name: str
+    affiliation: str = ""
+
+class CertifiedUserUpdate(BaseModel):
+    name: str
+    affiliation: str = ""
+
+class CertifiedUserOut(BaseModel):
+    id: int
+    name: str
+    affiliation: str
+    apiKey: str
+    createdAt: str
+    expiresAt: str
+    daysLeft: int
+
+    model_config = {"from_attributes": True}
+
+class CertifiedUserCreated(BaseModel):
+    id: int
+    name: str
+    affiliation: str
+    apiKey: str
+    expiresAt: str
+
 # ── 장애물 ────────────────────────────────────────────────────────
 
 class ObstacleCreate(BaseModel):
@@ -25,6 +53,7 @@ class ObstacleOut(BaseModel):
     aiLabel: Optional[str] = None
     aiConfidence: Optional[float] = None
     aiDetections: Optional[list] = None  # [{label,confidence,bbox:[cx,cy,w,h]}]
+    isCertified: bool = False
 
     model_config = {"from_attributes": True}
 
@@ -51,6 +80,7 @@ class PostCreate(BaseModel):
     user_id: str = ""
     user_email: str = ""
     display_name: str = ""
+    certified_key: str = ""
 
 class PostOut(BaseModel):
     id: int
@@ -62,6 +92,7 @@ class PostOut(BaseModel):
     createdAt: str
     likes: int
     commentCount: int = 0
+    isCertified: bool = False
 
     model_config = {"from_attributes": True}
 
@@ -70,6 +101,7 @@ class CommentCreate(BaseModel):
     user_id: str = ""
     user_email: str = ""
     display_name: str = ""
+    certified_key: str = ""
 
 class CommentOut(BaseModel):
     id: int
@@ -79,6 +111,7 @@ class CommentOut(BaseModel):
     userEmail: str
     displayName: str
     createdAt: str
+    isCertified: bool = False
 
     model_config = {"from_attributes": True}
 

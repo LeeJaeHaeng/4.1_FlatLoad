@@ -6,6 +6,7 @@ import {
 import { WebView } from 'react-native-webview';
 import { MaterialIcons } from '@expo/vector-icons';
 import * as Location from 'expo-location';
+import { Gyroscope, Accelerometer, Magnetometer } from 'expo-sensors';
 import * as Speech from 'expo-speech';
 import { useFocusEffect } from '@react-navigation/native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -85,7 +86,7 @@ function buildMapHTML(lat: number, lng: number): string {
 <html>
 <head>
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-  <script type="text/javascript" src="https://dapi.kakao.com/v2/maps/sdk.js?appkey=${KAKAO_JS_KEY}"></script>
+  <script type="text/javascript" src="https://dapi.kakao.com/v2/maps/sdk.js?appkey=${KAKAO_JS_KEY}&autoload=false"></script>
   <style>
     * { margin: 0; padding: 0; box-sizing: border-box; }
     html, body { width: 100%; height: 100%; overflow: hidden; }
@@ -95,6 +96,7 @@ function buildMapHTML(lat: number, lng: number): string {
 <body>
   <div id="map"></div>
   <script>
+    kakao.maps.load(function() {
     var map = new kakao.maps.Map(document.getElementById('map'), {
       center: new kakao.maps.LatLng(${lat}, ${lng}),
       level: 3
@@ -115,10 +117,12 @@ function buildMapHTML(lat: number, lng: number): string {
       var svg = '<svg width="80" height="80" viewBox="0 0 80 80" xmlns="http://www.w3.org/2000/svg">';
       if (showHeading) {
         svg += '<g transform="rotate(' + heading + ', 40, 40)">'
-          + '<path d="M40,40 L23,10 A 30 30 0 0 1 57,10 Z" fill="rgba(66,133,244,0.25)" stroke="rgba(66,133,244,0.6)" stroke-width="1" stroke-linejoin="round"/>'
+          + '<path d="M40,40 L31,14 A 27 27 0 0 1 49,14 Z" fill="rgba(66,133,244,0.55)"/>'
           + '</g>';
       }
-      svg += '<circle cx="40" cy="40" r="10" fill="#4285F4" stroke="white" stroke-width="3"/></svg>';
+      svg += '<circle cx="40" cy="40" r="10" fill="white"/>';
+      svg += '<circle cx="40" cy="40" r="7" fill="#4285F4"/>';
+      svg += '</svg>';
       return svg;
     }
 
@@ -312,6 +316,22 @@ function buildMapHTML(lat: number, lng: number): string {
         }
       } catch(e) {}
     }
+
+    window.updateLocation = updateLocation;
+    window.updateHeading = updateHeading;
+    window.flyToLocation = flyToLocation;
+    window.onObstacleClick = onObstacleClick;
+    window.addObstacleMarker = addObstacleMarker;
+    window.clearObstacleMarkers = clearObstacleMarkers;
+    window.addFacilityMarker = addFacilityMarker;
+    window.clearFacilityMarkers = clearFacilityMarkers;
+    window.addManeuverMarker = addManeuverMarker;
+    window.clearManeuverMarkers = clearManeuverMarkers;
+    window.drawRoute = drawRoute;
+    window.clearRoute = clearRoute;
+    window.addDestMarker = addDestMarker;
+    window.ReactNativeWebView.postMessage(JSON.stringify({ type: 'mapReady' }));
+    }); // kakao.maps.load
   </script>
 </body>
 </html>`;
@@ -329,6 +349,14 @@ export default function MapScreen({ navigation }: any) {
   const [selectedObstacle, setSelectedObstacle] = useState<ObstacleRecord | null>(null);
   const [voteState, setVoteState] = useState<{ likes: number; dislikes: number; userVote: 'like' | 'dislike' | null } | null>(null);
   const webViewRef = useRef<WebView>(null);
+
+  // 상보 필터 상태 refs
+  const cfHeadingRef    = useRef<number | null>(null);
+  const lastGyroTimeRef = useRef<number>(0);
+  const accDataRef      = useRef<{ x: number; y: number; z: number } | null>(null);
+  const magDataRef      = useRef<{ x: number; y: number; z: number } | null>(null);
+  const lastSendTimeRef = useRef<number>(0);
+  const sensorSubsRef   = useRef<{ acc: any; mag: any; gyro: any } | null>(null);
 
   // 길찾기 상태
   const [showSearch, setShowSearch] = useState(false);
@@ -599,8 +627,8 @@ export default function MapScreen({ navigation }: any) {
         // ── 일반 경로: OSRM driving (자동차) ────────────────────
         await fetchOsrmRoute(fromLat, fromLng, toLat, toLng, 'driving', '#888888', 'normal');
       }
-    } catch {
-      Alert.alert('오류', '경로 계산 중 문제가 발생했습니다.');
+    } catch (e: any) {
+      Alert.alert('경로 오류', String(e?.message ?? e));
     } finally {
       setRouteLoading(false);
     }
@@ -768,7 +796,6 @@ export default function MapScreen({ navigation }: any) {
 
   useEffect(() => {
     let posSubscription: Location.LocationSubscription | null = null;
-    let headingSubscription: Location.LocationSubscription | null = null;
 
     (async () => {
       const { status } = await Location.requestForegroundPermissionsAsync();
@@ -811,18 +838,73 @@ export default function MapScreen({ navigation }: any) {
       );
 
       try {
-        headingSubscription = await Location.watchHeadingAsync((h) => {
-          const deg = h.trueHeading >= 0 ? h.trueHeading : h.magHeading;
-          setHeading(deg);
+        Accelerometer.setUpdateInterval(20);
+        Magnetometer.setUpdateInterval(20);
+        Gyroscope.setUpdateInterval(16);
+
+        const accSub = Accelerometer.addListener(data => { accDataRef.current = data; });
+        const magSub = Magnetometer.addListener(data => { magDataRef.current = data; });
+        const gyroSub = Gyroscope.addListener(({ x: gx, y: gy, z: gz }) => {
+          const now = Date.now();
+          const acc = accDataRef.current;
+          const mag = magDataRef.current;
+          if (!acc || !mag) { lastGyroTimeRef.current = now; return; }
+
+          const dt = lastGyroTimeRef.current > 0
+            ? (now - lastGyroTimeRef.current) / 1000
+            : 0.016;
+          lastGyroTimeRef.current = now;
+
+          // 가속도계 정규화 (중력 방향 단위벡터)
+          const { x: ax, y: ay, z: az } = acc;
+          const { x: mx, y: my, z: mz } = mag;
+          const accNorm = Math.sqrt(ax * ax + ay * ay + az * az);
+          if (accNorm < 0.1) return;
+          const axn = ax / accNorm, ayn = ay / accNorm, azn = az / accNorm;
+
+          // 자이로 벡터를 중력 방향에 투영해 yaw 성분만 추출 (기기 기울기 무관)
+          const yawRate = -(gx * axn + gy * ayn + gz * azn);
+          const gyroDeg = yawRate * dt * (180 / Math.PI);
+
+          // 틸트 보정 지자기 절대 방위
+          const pitch = Math.atan2(-axn, Math.sqrt(ayn * ayn + azn * azn));
+          const roll  = Math.atan2(ayn, azn);
+          const Xh = mx * Math.cos(pitch) + mz * Math.sin(pitch);
+          const Yh = mx * Math.sin(roll) * Math.sin(pitch)
+                   + my * Math.cos(roll)
+                   - mz * Math.sin(roll) * Math.cos(pitch);
+          let magDeg = Math.atan2(-Yh, Xh) * (180 / Math.PI);
+          magDeg = ((magDeg % 360) + 360) % 360;
+
+          // 상보 필터: α=0.97 (자이로 단기 정확도 + 자기계 장기 보정)
+          const ALPHA = 0.97;
+          if (cfHeadingRef.current === null) {
+            cfHeadingRef.current = magDeg;
+          } else {
+            let gh = (cfHeadingRef.current + gyroDeg + 360) % 360;
+            let diff = magDeg - gh;
+            if (diff > 180) diff -= 360;
+            if (diff < -180) diff += 360;
+            cfHeadingRef.current = (gh + (1 - ALPHA) * diff + 360) % 360;
+          }
+
+          // 15Hz(67ms)로 throttle해서 상태 업데이트
+          if (now - lastSendTimeRef.current >= 67) {
+            setHeading(Math.round(cfHeadingRef.current!));
+            lastSendTimeRef.current = now;
+          }
         });
+
+        sensorSubsRef.current = { acc: accSub, mag: magSub, gyro: gyroSub };
       } catch {
-        // 나침반 미지원 기기에서는 방향 표시 없이 동작
+        // 센서 미지원 기기에서는 방향 표시 없이 동작
       }
     })();
 
     return () => {
       posSubscription?.remove();
-      headingSubscription?.remove();
+      const s = sensorSubsRef.current;
+      if (s) { s.acc.remove(); s.mag.remove(); s.gyro.remove(); }
     };
   }, []);
 
@@ -933,12 +1015,14 @@ export default function MapScreen({ navigation }: any) {
         originWhitelist={['*']}
         javaScriptEnabled
         domStorageEnabled
-        onLoad={() => setMapReady(true)}
+        onLoad={() => {}}
         onError={() => setErrorMsg('지도를 불러오는 데 실패했습니다.')}
         onMessage={(e) => {
           try {
             const msg = JSON.parse(e.nativeEvent.data);
-            if (msg.type === 'obstacleClick') {
+            if (msg.type === 'mapReady') {
+              setMapReady(true);
+            } else if (msg.type === 'obstacleClick') {
               const found = obstacles.find(o => o.id === msg.id);
               if (found) setSelectedObstacle(found);
             }
@@ -1234,9 +1318,11 @@ export default function MapScreen({ navigation }: any) {
                 </Text>
                 <Text style={styles.modalLabel}>기여자</Text>
                 <Text style={styles.modalValue}>
+                  {(selectedObstacle as any).isCertified ? '⭐ ' : ''}
                   {selectedObstacle.displayName
                     ? `${selectedObstacle.displayName} (${selectedObstacle.userEmail})`
                     : selectedObstacle.userEmail || '익명'}
+                  {(selectedObstacle as any).isCertified ? ' · 인증된 기여자' : ''}
                 </Text>
               </View>
               <View style={styles.voteRow}>

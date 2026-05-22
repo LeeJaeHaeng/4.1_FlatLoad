@@ -240,6 +240,8 @@ export default function ContributeScreen() {
         longitude = loc.coords.longitude;
       }
 
+      const certKey = (await AsyncStorage.getItem('@flatroad/certified_key')) ?? '';
+
       let aiLabel: string | null = null;
       let aiConfidence: number | null = null;
       try {
@@ -249,7 +251,8 @@ export default function ContributeScreen() {
           longitude,
           user?.uid ?? '',
           user?.email ?? '',
-          user?.displayName ?? ''
+          user?.displayName ?? '',
+          certKey
         );
         aiLabel = result.aiLabel;
         aiConfidence = result.aiConfidence;
@@ -373,6 +376,7 @@ export default function ContributeScreen() {
                   </View>
                   <View style={styles.obstacleInfo}>
                     <Text style={styles.obstacleDate}>
+                      {(item as any).isCertified ? '⭐ ' : ''}
                       {new Date(item.createdAt).toLocaleDateString('ko-KR', {
                         year: 'numeric', month: 'long', day: 'numeric',
                       })}

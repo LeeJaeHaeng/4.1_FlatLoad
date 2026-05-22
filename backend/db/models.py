@@ -1,6 +1,17 @@
 from sqlalchemy import Column, Integer, String, Float, DateTime, Text, Boolean, UniqueConstraint, func
 from db.database import Base
 
+class CertifiedUser(Base):
+    __tablename__ = "certified_users"
+
+    id          = Column(Integer, primary_key=True, autoincrement=True)
+    name        = Column(String, nullable=False)
+    affiliation = Column(String, nullable=False, default="")
+    api_key     = Column(String(64), nullable=False, unique=True)
+    created_at  = Column(DateTime(timezone=True), server_default=func.now())
+    expires_at  = Column(DateTime(timezone=True), nullable=False)
+
+
 class Obstacle(Base):
     __tablename__ = "obstacles"
 
@@ -18,6 +29,7 @@ class Obstacle(Base):
     ai_confidence = Column(Float, nullable=True)
     ai_detections = Column(Text, nullable=True)   # JSON: [{label,confidence,bbox}]
     is_approved   = Column(Boolean, nullable=False, default=True)
+    is_certified  = Column(Boolean, nullable=False, default=False)
 
 
 class Vote(Base):
@@ -41,6 +53,7 @@ class Post(Base):
     display_name = Column(String, nullable=False, default="")
     created_at   = Column(DateTime(timezone=True), server_default=func.now())
     likes        = Column(Integer, nullable=False, default=0)
+    is_certified = Column(Boolean, nullable=False, default=False)
 
 
 class PostLike(Base):
@@ -62,3 +75,4 @@ class Comment(Base):
     user_email   = Column(String, nullable=False, default="")
     display_name = Column(String, nullable=False, default="")
     created_at   = Column(DateTime(timezone=True), server_default=func.now())
+    is_certified = Column(Boolean, nullable=False, default=False)

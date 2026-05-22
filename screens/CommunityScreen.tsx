@@ -7,6 +7,7 @@ import {
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { MaterialIcons } from '@expo/vector-icons';
 import { useFocusEffect } from '@react-navigation/native';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import { useAuth } from '../context/AuthContext';
 import {
   Post, Comment,
@@ -54,15 +55,21 @@ function PostCard({
   };
 
   const name = post.displayName || post.userEmail.split('@')[0] || '익명';
+  const isCertified = (post as any).isCertified;
 
   return (
     <TouchableOpacity style={styles.card} onPress={onPress} activeOpacity={0.85}>
       <View style={styles.cardHeader}>
-        <View style={styles.avatar}>
-          <Text style={styles.avatarText}>{name[0]?.toUpperCase() ?? '?'}</Text>
+        <View style={[styles.avatar, isCertified && { backgroundColor: '#F5A623' }]}>
+          <Text style={styles.avatarText}>{isCertified ? '⭐' : (name[0]?.toUpperCase() ?? '?')}</Text>
         </View>
         <View style={{ flex: 1 }}>
-          <Text style={styles.cardAuthor}>{name}</Text>
+          <View style={{ flexDirection: 'row', alignItems: 'center', gap: 4 }}>
+            <Text style={styles.cardAuthor}>{name}</Text>
+            {isCertified && (
+              <Text style={{ fontSize: 11, color: '#F5A623', fontWeight: '700' }}>인증됨</Text>
+            )}
+          </View>
           <Text style={styles.cardTime}>{timeAgo(post.createdAt)}</Text>
         </View>
       </View>
@@ -96,15 +103,19 @@ function CommentItem({
 }) {
   const name = comment.displayName || comment.userEmail.split('@')[0] || '익명';
   const isMine = currentUserId && comment.userId === currentUserId;
+  const isCertified = (comment as any).isCertified;
 
   return (
     <View style={styles.commentRow}>
-      <View style={styles.commentAvatar}>
-        <Text style={styles.commentAvatarText}>{name[0]?.toUpperCase() ?? '?'}</Text>
+      <View style={[styles.commentAvatar, isCertified && { backgroundColor: '#F5A623' }]}>
+        <Text style={styles.commentAvatarText}>{isCertified ? '⭐' : (name[0]?.toUpperCase() ?? '?')}</Text>
       </View>
       <View style={{ flex: 1 }}>
         <View style={styles.commentMeta}>
           <Text style={styles.commentAuthor}>{name}</Text>
+          {isCertified && (
+            <Text style={{ fontSize: 10, color: '#F5A623', fontWeight: '700' }}>인증됨</Text>
+          )}
           <Text style={styles.commentTime}>{timeAgo(comment.createdAt)}</Text>
           {isMine && (
             <TouchableOpacity onPress={onDelete} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
@@ -182,7 +193,9 @@ export default function CommunityScreen() {
 
     setSubmitting(true);
     try {
-      await createPost(title.trim(), content.trim(), user.uid, user.email ?? '', user.displayName ?? '');
+      const certKey = await AsyncStorage.getItem('@flatroad/certified_key');
+      const isCertified = !!certKey;
+      await createPost(title.trim(), content.trim(), user.uid, user.email ?? '', user.displayName ?? '', isCertified);
       setTitle('');
       setContent('');
       setView('list');
@@ -212,12 +225,14 @@ export default function CommunityScreen() {
     if (!user) { Alert.alert('알림', '로그인 후 댓글을 달 수 있습니다.'); return; }
     if (!commentText.trim()) return;
     if (!selectedPost) return;
+    const certKey = await AsyncStorage.getItem('@flatroad/certified_key');
     await addComment(
       selectedPost.id,
       commentText.trim(),
       user.uid,
       user.email ?? '',
-      user.displayName ?? ''
+      user.displayName ?? '',
+      !!certKey
     );
     setCommentText('');
     loadComments(selectedPost.id);

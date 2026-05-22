@@ -1,10 +1,11 @@
 import asyncio
 import json
+from datetime import datetime, timezone
 from fastapi import APIRouter, Depends, UploadFile, File, Form, HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, func, update
 from db.database import get_db
-from db.models import Obstacle, Vote
+from db.models import Obstacle, Vote, CertifiedUser
 from db.schemas import ObstacleOut, VoteRequest, VoteOut, TopContributor
 from services import storage, detector
 
@@ -31,6 +32,7 @@ def _to_out(row: Obstacle) -> ObstacleOut:
         aiLabel=row.ai_label,
         aiConfidence=row.ai_confidence,
         aiDetections=detections,
+        isCertified=row.is_certified,
     )
 
 
@@ -43,12 +45,13 @@ async def get_all_obstacles(db: AsyncSession = Depends(get_db)):
 @router.post("", response_model=ObstacleOut)
 async def create_obstacle(
     photo: UploadFile = File(...),
-    latitude: float   = Form(...),
-    longitude: float  = Form(...),
-    user_id: str      = Form(""),
-    user_email: str   = Form(""),
-    display_name: str = Form(""),
-    db: AsyncSession  = Depends(get_db),
+    latitude: float        = Form(...),
+    longitude: float       = Form(...),
+    user_id: str           = Form(""),
+    user_email: str        = Form(""),
+    display_name: str      = Form(""),
+    certified_key: str     = Form(""),
+    db: AsyncSession       = Depends(get_db),
 ):
     image_bytes = await photo.read()
 
@@ -74,6 +77,17 @@ async def create_obstacle(
         ai_confidence = top["confidence"]
         ai_detections_json = json.dumps(detections, ensure_ascii=False)
 
+    is_certified = False
+    if certified_key:
+        cert = (await db.execute(
+            select(CertifiedUser).where(
+                CertifiedUser.api_key == certified_key,
+                CertifiedUser.expires_at > datetime.now(timezone.utc),
+            )
+        )).scalar_one_or_none()
+        if cert:
+            is_certified = True
+
     obs = Obstacle(
         photo_url     = photo_url,
         latitude      = latitude,
@@ -84,6 +98,7 @@ async def create_obstacle(
         ai_label      = ai_label,
         ai_confidence = ai_confidence,
         ai_detections = ai_detections_json,
+        is_certified  = is_certified,
     )
     db.add(obs)
     await db.commit()

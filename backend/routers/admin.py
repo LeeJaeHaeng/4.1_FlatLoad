@@ -1,10 +1,13 @@
 import json
+import secrets
 from pathlib import Path
+from datetime import datetime, timedelta, timezone
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, func, delete, update
 from db.database import get_db
-from db.models import Obstacle, Vote, Post, PostLike, Comment
+from db.models import Obstacle, Vote, Post, PostLike, Comment, CertifiedUser
+from db.schemas import CertifiedUserCreate, CertifiedUserUpdate
 
 router = APIRouter(prefix="/admin", tags=["admin"])
 
@@ -144,5 +147,73 @@ async def delete_comment(comment_id: int, db: AsyncSession = Depends(get_db)):
     if not c:
         raise HTTPException(404, "댓글을 찾을 수 없습니다")
     await db.delete(c)
+    await db.commit()
+    return {"ok": True}
+
+
+# ── 인증된 사용자 ────────────────────────────────────────────────────
+
+def _cert_dict(row: CertifiedUser) -> dict:
+    now = datetime.now(timezone.utc)
+    expires = row.expires_at.replace(tzinfo=timezone.utc) if row.expires_at.tzinfo is None else row.expires_at
+    days_left = max(0, (expires - now).days)
+    return {
+        "id": row.id,
+        "name": row.name,
+        "affiliation": row.affiliation,
+        "apiKey": row.api_key,
+        "createdAt": row.created_at.isoformat() if row.created_at else None,
+        "expiresAt": row.expires_at.isoformat() if row.expires_at else None,
+        "daysLeft": days_left,
+    }
+
+
+@router.get("/certified")
+async def get_certified_users(db: AsyncSession = Depends(get_db)):
+    rows = (await db.execute(
+        select(CertifiedUser).order_by(CertifiedUser.created_at.desc())
+    )).scalars().all()
+    return [_cert_dict(r) for r in rows]
+
+
+@router.post("/certified")
+async def create_certified_user(body: CertifiedUserCreate, db: AsyncSession = Depends(get_db)):
+    api_key = secrets.token_hex(32)
+    expires_at = datetime.now(timezone.utc) + timedelta(days=365)
+    user = CertifiedUser(
+        name=body.name,
+        affiliation=body.affiliation,
+        api_key=api_key,
+        expires_at=expires_at,
+    )
+    db.add(user)
+    await db.commit()
+    await db.refresh(user)
+    return {
+        "id": user.id,
+        "name": user.name,
+        "affiliation": user.affiliation,
+        "apiKey": user.api_key,
+        "expiresAt": user.expires_at.isoformat(),
+    }
+
+
+@router.put("/certified/{user_id}")
+async def update_certified_user(user_id: int, body: CertifiedUserUpdate, db: AsyncSession = Depends(get_db)):
+    user = await db.get(CertifiedUser, user_id)
+    if not user:
+        raise HTTPException(404, "인증 사용자를 찾을 수 없습니다")
+    user.name = body.name
+    user.affiliation = body.affiliation
+    await db.commit()
+    return _cert_dict(user)
+
+
+@router.delete("/certified/{user_id}")
+async def delete_certified_user(user_id: int, db: AsyncSession = Depends(get_db)):
+    user = await db.get(CertifiedUser, user_id)
+    if not user:
+        raise HTTPException(404, "인증 사용자를 찾을 수 없습니다")
+    await db.delete(user)
     await db.commit()
     return {"ok": True}
