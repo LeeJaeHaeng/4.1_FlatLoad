@@ -29,6 +29,7 @@ import {
   apiCreateObstacle,
   apiGetMyObstacles,
   apiGetTopContributors,
+  apiUpdateObstacleLabel,
   ApiObstacle,
 } from '../utils/api';
 import { useAuth } from '../context/AuthContext';
@@ -106,6 +107,11 @@ export default function ContributeScreen() {
   const [listLoading, setListLoading] = useState(true);
   const [selectedItem, setSelectedItem] = useState<ObstacleRecord | null>(null);
   const [detailImgSize, setDetailImgSize] = useState({ w: SCREEN_W - 48, h: 240 });
+
+  const [labelPicker, setLabelPicker] = useState<{
+    obstacleId: number;
+    detections: Detection[];
+  } | null>(null);
 
   useEffect(() => {
     AsyncStorage.getItem('settings.muteShutter').then((val) => {
@@ -244,6 +250,8 @@ export default function ContributeScreen() {
 
       let aiLabel: string | null = null;
       let aiConfidence: number | null = null;
+      let aiDetections: Detection[] = [];
+      let savedId: number | null = null;
       try {
         const result = await apiCreateObstacle(
           capturedUri,
@@ -256,6 +264,8 @@ export default function ContributeScreen() {
         );
         aiLabel = result.aiLabel;
         aiConfidence = result.aiConfidence;
+        aiDetections = (result.aiDetections as Detection[]) ?? [];
+        savedId = result.id;
       } catch {
         await saveObstacle(
           capturedUri,
@@ -267,20 +277,31 @@ export default function ContributeScreen() {
         );
       }
 
-      const labelKo = aiLabel ? (LABEL_KO[aiLabel] ?? aiLabel) : null;
-      const aiMsg = labelKo
-        ? `\n\n🤖 AI 감지: ${labelKo} (신뢰도 ${Math.round((aiConfidence ?? 0) * 100)}%)`
-        : '';
-      Alert.alert('저장 완료', `장애물 정보가 저장되었습니다.${aiMsg}`, [
-        {
-          text: '확인',
-          onPress: () => {
-            setCapturedUri(null);
-            setScreen('list');
-            loadListData();
+      const finishSave = (finalLabel: string | null, finalConf: number | null) => {
+        const labelKo = finalLabel ? (LABEL_KO[finalLabel] ?? finalLabel) : null;
+        const aiMsg = labelKo
+          ? `\n\n🤖 AI 감지: ${labelKo} (신뢰도 ${Math.round((finalConf ?? 0) * 100)}%)`
+          : '';
+        Alert.alert('저장 완료', `장애물 정보가 저장되었습니다.${aiMsg}`, [
+          {
+            text: '확인',
+            onPress: () => {
+              setCapturedUri(null);
+              setScreen('list');
+              loadListData();
+            },
           },
-        },
-      ]);
+        ]);
+      };
+
+      if (savedId && aiDetections.length > 1) {
+        setLabelPicker({ obstacleId: savedId, detections: aiDetections });
+        setCapturedUri(null);
+        setScreen('list');
+        return;
+      }
+
+      finishSave(aiLabel, aiConfidence);
     } catch (e) {
       Alert.alert('오류', `저장 중 문제가 발생했습니다.\n${(e as Error)?.message ?? String(e)}`);
     } finally {
@@ -499,8 +520,71 @@ export default function ContributeScreen() {
             </View>
           </View>
         </Modal>
-      </SafeAreaView>
-    );
+
+      {/* 다중 감지 레이블 선택 모달 */}
+      <Modal
+        visible={!!labelPicker}
+        animationType="slide"
+        transparent
+        onRequestClose={() => setLabelPicker(null)}
+      >
+        <View style={styles.detailOverlay}>
+          <View style={styles.detailCard}>
+            <View style={styles.detailHeader}>
+              <Text style={styles.detailTitle}>어떤 장애물인가요?</Text>
+              <TouchableOpacity onPress={() => setLabelPicker(null)} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
+                <MaterialIcons name="close" size={24} color="#333" />
+              </TouchableOpacity>
+            </View>
+            <Text style={{ fontSize: 13, color: '#888', marginBottom: 16 }}>
+              AI가 여러 객체를 감지했습니다. 실제 장애물을 선택해주세요.
+            </Text>
+            {labelPicker?.detections.map((d, i) => (
+              <TouchableOpacity
+                key={i}
+                style={styles.pickerItem}
+                activeOpacity={0.75}
+                onPress={async () => {
+                  if (!labelPicker) return;
+                  try {
+                    await apiUpdateObstacleLabel(labelPicker.obstacleId, d.label);
+                  } catch { /* 실패해도 저장은 완료된 상태 */ }
+                  setLabelPicker(null);
+                  loadListData();
+                  const labelKo = LABEL_KO[d.label] ?? d.label;
+                  Alert.alert(
+                    '저장 완료',
+                    `장애물 정보가 저장되었습니다.\n\n🤖 AI 감지: ${labelKo} (신뢰도 ${Math.round(d.confidence * 100)}%)`,
+                  );
+                }}
+              >
+                <View style={[styles.detectDot, { backgroundColor: BBOX_COLORS[i % BBOX_COLORS.length] }]} />
+                <Text style={styles.pickerLabel}>{LABEL_KO[d.label] ?? d.label}</Text>
+                <View style={styles.detectBar}>
+                  <View style={[styles.detectBarFill, {
+                    width: `${Math.round(d.confidence * 100)}%` as any,
+                    backgroundColor: BBOX_COLORS[i % BBOX_COLORS.length],
+                  }]} />
+                </View>
+                <Text style={styles.detectPct}>{Math.round(d.confidence * 100)}%</Text>
+                <MaterialIcons name="chevron-right" size={18} color="#ccc" />
+              </TouchableOpacity>
+            ))}
+            <TouchableOpacity
+              style={styles.pickerSkip}
+              onPress={() => {
+                setLabelPicker(null);
+                loadListData();
+                Alert.alert('저장 완료', '장애물 정보가 저장되었습니다.');
+              }}
+            >
+              <Text style={styles.pickerSkipText}>건너뛰기</Text>
+            </TouchableOpacity>
+          </View>
+        </View>
+      </Modal>
+    </SafeAreaView>
+  );
   }
 
   // ── 카메라 화면 ─────────────────────────────────────────────────
@@ -751,6 +835,25 @@ const styles = StyleSheet.create({
 
   detailMeta: { gap: 4, marginTop: 4 },
   detailMetaText: { fontSize: 12, color: '#999' },
+
+  // 레이블 선택 모달
+  pickerItem: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+    paddingVertical: 14,
+    borderBottomWidth: 1,
+    borderBottomColor: '#f5f5f5',
+  },
+  pickerLabel: { fontSize: 15, fontWeight: '600', color: '#222', width: 90 },
+  pickerSkip: {
+    marginTop: 16,
+    alignItems: 'center',
+    paddingVertical: 12,
+    borderRadius: 10,
+    backgroundColor: '#f5f5f5',
+  },
+  pickerSkipText: { fontSize: 14, color: '#888', fontWeight: '500' },
 
   // 카메라
   fullScreen: { flex: 1, backgroundColor: '#000' },

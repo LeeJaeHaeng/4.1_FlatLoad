@@ -55,14 +55,14 @@ async def create_obstacle(
 ):
     image_bytes = await photo.read()
 
-    # Firebase 업로드 + Detectron2 추론 병렬 실행 (속도 최적화)
+    # Firebase 업로드 + YOLO-World 추론 병렬 실행 (속도 최적화)
     async def _safe_detect() -> list:
         if not detector.MODEL_READY:
             return []
         try:
             return await asyncio.to_thread(detector.detect, image_bytes)
         except Exception as e:
-            print(f"[Detectron2] 분석 실패: {e}")
+            print(f"[YOLO-World] 분석 실패: {e}")
             return []
 
     photo_url, detections = await asyncio.gather(
@@ -173,6 +173,41 @@ async def get_my_obstacles(user_id: str, db: AsyncSession = Depends(get_db)):
         select(Obstacle).where(Obstacle.user_id == user_id).order_by(Obstacle.created_at.desc())
     )
     return [_to_out(r) for r in result.scalars().all()]
+
+
+@router.patch("/{obstacle_id}/label")
+async def update_obstacle_label(
+    obstacle_id: int,
+    body: dict,
+    db: AsyncSession = Depends(get_db),
+):
+    selected_label = body.get("selected_label", "")
+    if not selected_label:
+        raise HTTPException(400, "selected_label is required")
+
+    obs = await db.get(Obstacle, obstacle_id)
+    if not obs:
+        raise HTTPException(404, "장애물을 찾을 수 없습니다")
+
+    if obs.ai_detections:
+        try:
+            detections = json.loads(obs.ai_detections)
+            valid_labels = [d["label"] for d in detections]
+            if selected_label not in valid_labels:
+                raise HTTPException(400, "선택한 레이블이 감지 결과에 없습니다")
+            for d in detections:
+                if d["label"] == selected_label:
+                    obs.ai_label = selected_label
+                    obs.ai_confidence = d["confidence"]
+                    break
+        except json.JSONDecodeError:
+            raise HTTPException(500, "감지 데이터 파싱 오류")
+    else:
+        obs.ai_label = selected_label
+
+    await db.commit()
+    await db.refresh(obs)
+    return _to_out(obs)
 
 
 @router.get("/contributors/top", response_model=list[TopContributor])

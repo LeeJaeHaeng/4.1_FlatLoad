@@ -177,6 +177,19 @@ export async function apiDeleteComment(commentId: number, userId: string) {
   return res.json();
 }
 
+export async function apiUpdateObstacleLabel(
+  obstacleId: number,
+  selectedLabel: string,
+): Promise<ApiObstacle> {
+  const res = await apiFetch(`${API_BASE_URL}/api/obstacles/${obstacleId}/label`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ selected_label: selectedLabel }),
+  });
+  if (!res.ok) throw new Error('레이블 업데이트 실패');
+  return res.json();
+}
+
 // ── AI 분석 상태 확인 ─────────────────────────────────────────────
 
 export async function apiCheckAiStatus(): Promise<{ ready: boolean; classes: string[] }> {

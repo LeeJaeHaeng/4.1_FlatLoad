@@ -9,8 +9,9 @@ pydantic-settings==2.5.2
 firebase-admin==6.5.0
 Pillow==10.4.0
 numpy
+ultralytics
 
-# Detectron2 — 별도 설치 필요 (CUDA 버전에 맞게 URL 선택)
+# 이전 구현: Detectron2 — 별도 설치 필요 (CUDA 버전에 맞게 URL 선택)
 # pip install torch torchvision --index-url https://download.pytorch.org/whl/cu118
 # pip install detectron2 -f https://dl.fbaipublicfiles.com/detectron2/wheels/cu118/torch2.0/index.html
 # CPU 전용:
