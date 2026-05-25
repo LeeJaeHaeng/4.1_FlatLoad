@@ -1,8 +1,8 @@
 {
   "expo": {
-    "name": "MyApp",
-    "slug": "MyApp",
-    "scheme": "myapp",
+    "name": "평탄로",
+    "slug": "flatroad",
+    "scheme": "flatroad",
     "version": "1.0.0",
     "orientation": "portrait",
     "icon": "./assets/icon.png",
@@ -31,9 +31,10 @@
         "android.permission.ACCESS_FINE_LOCATION",
         "android.permission.CAMERA",
         "android.permission.READ_EXTERNAL_STORAGE",
-        "android.permission.WRITE_EXTERNAL_STORAGE"
+        "android.permission.WRITE_EXTERNAL_STORAGE",
+        "android.permission.RECORD_AUDIO"
       ],
-      "package": "com.anonymous.MyApp"
+      "package": "com.flatroad.app"
     },
     "web": {
       "favicon": "./assets/favicon.png"
@@ -53,6 +54,12 @@
       ],
       "expo-sqlite",
       "expo-web-browser"
-    ]
+    ],
+    "extra": {
+      "eas": {
+        "projectId": "e69a6a01-a8f4-4abb-a7e5-20acb89ae8da"
+      }
+    },
+    "owner": "alphaxen"
   }
 }
