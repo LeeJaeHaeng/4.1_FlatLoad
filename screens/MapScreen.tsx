@@ -380,6 +380,8 @@ export default function MapScreen({ navigation }: any) {
   // 필터 상태
   const [activeFilters, setActiveFilters] = useState<Set<string>>(new Set());
   const [filterLoading, setFilterLoading] = useState<string | null>(null);
+  const [obstacleFilter, setObstacleFilter] = useState<'all' | 'certified'>('all');
+  const [showObstacleFilterModal, setShowObstacleFilterModal] = useState(false);
 
   // TTS: 내비게이션 시작/종료 (항상 한국어 레이블 사용)
   useEffect(() => {
@@ -958,20 +960,24 @@ export default function MapScreen({ navigation }: any) {
 
   useEffect(() => {
     if (!mapReady) return;
+    const filtered = obstacleFilter === 'certified'
+      ? obstacles.filter(o => (o as any).isCertified)
+      : obstacles;
     webViewRef.current?.injectJavaScript(`
       (function() {
-        var obs = ${JSON.stringify(obstacles.map(o => ({
+        var obs = ${JSON.stringify(filtered.map(o => ({
           id: o.id,
           latitude: o.latitude,
           longitude: o.longitude,
           photoUri: o.photoBase64 || o.photoUri,
           createdAt: o.createdAt,
+          isCertified: (o as any).isCertified ?? false,
         })))};
         handleMessage(JSON.stringify({ type: 'setObstacles', obstacles: obs }));
       })();
       true;
     `);
-  }, [obstacles, mapReady]);
+  }, [obstacles, mapReady, obstacleFilter]);
 
   const flyToCurrentLocation = () => {
     if (!location) return;
@@ -1059,9 +1065,15 @@ export default function MapScreen({ navigation }: any) {
           contentContainerStyle={styles.filterContent}
           style={styles.filterScroll}
         >
-          <TouchableOpacity style={styles.filterChip} onPress={showWip} activeOpacity={0.8}>
-            <MaterialIcons name="tune" size={14} color="#555" />
-            <Text style={styles.filterChipText}> 필터</Text>
+          <TouchableOpacity
+            style={[styles.filterChip, obstacleFilter === 'certified' && styles.filterChipActive]}
+            onPress={() => setShowObstacleFilterModal(true)}
+            activeOpacity={0.8}
+          >
+            <MaterialIcons name="tune" size={14} color={obstacleFilter === 'certified' ? '#fff' : '#555'} />
+            <Text style={obstacleFilter === 'certified' ? styles.filterChipActiveText : styles.filterChipText}>
+              {obstacleFilter === 'certified' ? ' ⭐ 인증 장애물' : ' 필터'}
+            </Text>
           </TouchableOpacity>
           {(['경사로', '엘리베이터', '장애인화장실'] as const).map((name) => {
             const active = activeFilters.has(name);
@@ -1287,6 +1299,50 @@ export default function MapScreen({ navigation }: any) {
         </View>
       </Modal>
 
+      {/* 장애물 필터 모달 */}
+      <Modal
+        transparent
+        animationType="fade"
+        visible={showObstacleFilterModal}
+        onRequestClose={() => setShowObstacleFilterModal(false)}
+      >
+        <TouchableOpacity
+          style={styles.filterModalOverlay}
+          activeOpacity={1}
+          onPress={() => setShowObstacleFilterModal(false)}
+        >
+          <View style={styles.filterModalCard}>
+            <Text style={styles.filterModalTitle}>장애물 필터</Text>
+            {([
+              { key: 'all',       label: '전체 장애물',          desc: '모든 사용자가 올린 장애물 표시', icon: 'location-on' },
+              { key: 'certified', label: '⭐ 인증 사용자 장애물', desc: '인증된 기관 사용자의 장애물만 표시', icon: 'verified' },
+            ] as const).map(opt => (
+              <TouchableOpacity
+                key={opt.key}
+                style={[styles.filterOption, obstacleFilter === opt.key && styles.filterOptionActive]}
+                onPress={() => { setObstacleFilter(opt.key); setShowObstacleFilterModal(false); }}
+                activeOpacity={0.8}
+              >
+                <MaterialIcons
+                  name={opt.icon as any}
+                  size={20}
+                  color={obstacleFilter === opt.key ? '#F5A623' : '#888'}
+                />
+                <View style={{ flex: 1 }}>
+                  <Text style={[styles.filterOptionLabel, obstacleFilter === opt.key && { color: '#F5A623' }]}>
+                    {opt.label}
+                  </Text>
+                  <Text style={styles.filterOptionDesc}>{opt.desc}</Text>
+                </View>
+                {obstacleFilter === opt.key && (
+                  <MaterialIcons name="check" size={18} color="#F5A623" />
+                )}
+              </TouchableOpacity>
+            ))}
+          </View>
+        </TouchableOpacity>
+      </Modal>
+
       {/* 장애물 상세 모달 */}
       {selectedObstacle && (
         <Modal
@@ -1467,6 +1523,50 @@ const styles = StyleSheet.create({
     fontSize: 13,
     color: '#fff',
     fontWeight: '600',
+  },
+  filterModalOverlay: {
+    flex: 1,
+    backgroundColor: 'rgba(0,0,0,0.35)',
+    justifyContent: 'flex-end',
+  },
+  filterModalCard: {
+    backgroundColor: '#fff',
+    borderTopLeftRadius: 20,
+    borderTopRightRadius: 20,
+    paddingHorizontal: 20,
+    paddingTop: 20,
+    paddingBottom: 36,
+    gap: 8,
+  },
+  filterModalTitle: {
+    fontSize: 16,
+    fontWeight: '800',
+    color: '#1a1a1a',
+    marginBottom: 8,
+  },
+  filterOption: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+    paddingVertical: 14,
+    paddingHorizontal: 16,
+    borderRadius: 14,
+    backgroundColor: '#f8f8f8',
+  },
+  filterOptionActive: {
+    backgroundColor: '#fff8ee',
+    borderWidth: 1.5,
+    borderColor: '#F5A623',
+  },
+  filterOptionLabel: {
+    fontSize: 14,
+    fontWeight: '700',
+    color: '#1a1a1a',
+  },
+  filterOptionDesc: {
+    fontSize: 12,
+    color: '#999',
+    marginTop: 2,
   },
 
   /* 우측 버튼 */
