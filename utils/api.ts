@@ -245,7 +245,28 @@ export async function apiGetRamps(lat: number, lng: number): Promise<{ lat: numb
   }
 }
 
-// ── AI 분석 상태 확인 ─────────────────────────────────────────────
+// ── AI 분석 ───────────────────────────────────────────────────────
+
+export async function apiAnalyzeImage(photoUri: string): Promise<{
+  aiLabel: string | null;
+  aiConfidence: number | null;
+  aiDetections: { label: string; confidence: number; bbox: [number, number, number, number] }[];
+}> {
+  const form = new FormData();
+  form.append('photo', { uri: photoUri, name: 'obstacle.jpg', type: 'image/jpeg' } as any);
+  try {
+    const res = await apiFetch(`${API_BASE_URL}/api/analyze/detect`, { method: 'POST', body: form }, 30000);
+    if (!res.ok) return { aiLabel: null, aiConfidence: null, aiDetections: [] };
+    const data = await res.json();
+    return {
+      aiLabel: data.ai_label ?? null,
+      aiConfidence: data.ai_confidence ?? null,
+      aiDetections: data.ai_detections ?? [],
+    };
+  } catch {
+    return { aiLabel: null, aiConfidence: null, aiDetections: [] };
+  }
+}
 
 export async function apiCheckAiStatus(): Promise<{ ready: boolean; classes: string[] }> {
   try {

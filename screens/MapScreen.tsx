@@ -182,16 +182,20 @@ function buildMapHTML(lat: number, lng: number): string {
       }));
     }
 
-    function addObstacleMarker(id, lat, lng, photoUri, createdAt) {
+    function addObstacleMarker(id, lat, lng, photoUri, createdAt, count) {
       if (obstacleOverlays[id]) obstacleOverlays[id].setMap(null);
       obstacleData[id] = { lat: lat, lng: lng, photoUri: photoUri, createdAt: createdAt };
       var photoContent = photoUri
         ? '<img src="' + photoUri + '" style="width:100%;height:100%;object-fit:cover;"/>'
         : '<div style="width:100%;height:100%;display:flex;align-items:center;justify-content:center;font-size:20px;">⚠️</div>';
+      var countBadge = (count > 1)
+        ? '<div style="position:absolute;top:-4px;right:-2px;background:#e53935;color:white;border-radius:10px;min-width:18px;height:18px;display:flex;align-items:center;justify-content:center;font-size:10px;font-weight:800;border:2px solid white;padding:0 2px;">×' + count + '</div>'
+        : '';
       var iconHtml = '<div style="position:relative;width:50px;height:60px;cursor:pointer;" onclick="onObstacleClick(' + id + ');">'
         + '<div style="position:absolute;top:0;left:3px;width:44px;height:44px;border-radius:50%;border:3px solid #FF5722;overflow:hidden;background:#eee;">'
         + photoContent
         + '</div>'
+        + countBadge
         + '<div style="position:absolute;bottom:0;left:50%;transform:translateX(-50%);width:0;height:0;border-left:8px solid transparent;border-right:8px solid transparent;border-top:14px solid #FF5722;"></div>'
         + '</div>';
       var overlay = new kakao.maps.CustomOverlay({
@@ -296,7 +300,7 @@ function buildMapHTML(lat: number, lng: number): string {
         } else if (msg.type === 'setObstacles') {
           clearObstacleMarkers();
           msg.obstacles.forEach(function(o) {
-            addObstacleMarker(o.id, o.latitude, o.longitude, o.photoUri, o.createdAt);
+            addObstacleMarker(o.id, o.latitude, o.longitude, o.photoUri, o.createdAt, o.count || 1);
           });
         } else if (msg.type === 'drawRoute') {
           drawRoute(msg.coords, msg.color);
@@ -349,6 +353,8 @@ export default function MapScreen({ navigation }: any) {
   const [mapReady, setMapReady] = useState(false);
   const [obstacles, setObstacles] = useState<(ObstacleRecord & { photoBase64: string })[]>([]);
   const [selectedObstacle, setSelectedObstacle] = useState<ObstacleRecord | null>(null);
+  const [groupObstacles, setGroupObstacles] = useState<ObstacleRecord[] | null>(null);
+  const groupMapRef = useRef<Record<number, number[]>>({});
   const [voteState, setVoteState] = useState<{ likes: number; dislikes: number; userVote: 'like' | 'dislike' | null } | null>(null);
   const webViewRef = useRef<WebView>(null);
 
@@ -977,15 +983,37 @@ export default function MapScreen({ navigation }: any) {
     const filtered = obstacleFilter === 'certified'
       ? obstacles.filter(o => (o as any).isCertified)
       : obstacles;
+
+    // 10m 이내 장애물 그룹화 — 대표 핀 하나에 ×N 배지 표시
+    const grouped: { repId: number; obs: typeof filtered[0]; count: number }[] = [];
+    const newGroupMap: Record<number, number[]> = {};
+    for (const obs of filtered) {
+      let added = false;
+      for (const g of grouped) {
+        if (haversine(obs.latitude, obs.longitude, g.obs.latitude, g.obs.longitude) < 10) {
+          newGroupMap[g.repId].push(obs.id);
+          g.count++;
+          added = true;
+          break;
+        }
+      }
+      if (!added) {
+        newGroupMap[obs.id] = [obs.id];
+        grouped.push({ repId: obs.id, obs, count: 1 });
+      }
+    }
+    groupMapRef.current = newGroupMap;
+
     webViewRef.current?.injectJavaScript(`
       (function() {
-        var obs = ${JSON.stringify(filtered.map(o => ({
-          id: o.id,
-          latitude: o.latitude,
-          longitude: o.longitude,
-          photoUri: o.photoBase64 || o.photoUri,
-          createdAt: o.createdAt,
-          isCertified: (o as any).isCertified ?? false,
+        var obs = ${JSON.stringify(grouped.map(g => ({
+          id: g.repId,
+          latitude: g.obs.latitude,
+          longitude: g.obs.longitude,
+          photoUri: (g.obs as any).photoBase64 || g.obs.photoUri,
+          createdAt: g.obs.createdAt,
+          isCertified: (g.obs as any).isCertified ?? false,
+          count: g.count,
         })))};
         handleMessage(JSON.stringify({ type: 'setObstacles', obstacles: obs }));
       })();
@@ -1039,8 +1067,16 @@ export default function MapScreen({ navigation }: any) {
             if (msg.type === 'mapReady') {
               setMapReady(true);
             } else if (msg.type === 'obstacleClick') {
-              const found = obstacles.find(o => o.id === msg.id);
-              if (found) setSelectedObstacle(found);
+              const groupIds = groupMapRef.current[msg.id] ?? [msg.id];
+              if (groupIds.length > 1) {
+                const members = groupIds
+                  .map(id => obstacles.find(o => o.id === id))
+                  .filter(Boolean) as ObstacleRecord[];
+                setGroupObstacles(members);
+              } else {
+                const found = obstacles.find(o => o.id === msg.id);
+                if (found) setSelectedObstacle(found);
+              }
             }
           } catch {}
         }}
@@ -1369,6 +1405,57 @@ export default function MapScreen({ navigation }: any) {
           </View>
         </TouchableOpacity>
       </Modal>
+
+      {/* 동일 위치 장애물 그룹 목록 모달 */}
+      {groupObstacles && (
+        <Modal
+          transparent
+          animationType="slide"
+          visible={!!groupObstacles}
+          onRequestClose={() => setGroupObstacles(null)}
+        >
+          <View style={styles.modalOverlay}>
+            <View style={styles.modalCard}>
+              <Text style={styles.modalTitle}>이 위치의 장애물 {groupObstacles.length}개</Text>
+              <ScrollView style={{ maxHeight: 360 }}>
+                {groupObstacles.map((obs, i) => (
+                  <TouchableOpacity
+                    key={obs.id}
+                    style={styles.groupItem}
+                    activeOpacity={0.75}
+                    onPress={() => {
+                      setGroupObstacles(null);
+                      setSelectedObstacle(obs);
+                    }}
+                  >
+                    {obs.photoUri
+                      ? <Image source={{ uri: obs.photoUri }} style={styles.groupThumb} />
+                      : <View style={[styles.groupThumb, { alignItems: 'center', justifyContent: 'center', backgroundColor: '#f0f0f0' }]}>
+                          <Text style={{ fontSize: 22 }}>⚠️</Text>
+                        </View>
+                    }
+                    <View style={{ flex: 1 }}>
+                      <Text style={styles.groupItemDate}>
+                        {new Date(obs.createdAt).toLocaleDateString('ko-KR', { month: 'long', day: 'numeric' })}
+                      </Text>
+                      <Text style={styles.groupItemCoords}>
+                        {obs.latitude.toFixed(5)}, {obs.longitude.toFixed(5)}
+                      </Text>
+                      <Text style={styles.groupItemUser}>
+                        {(obs as any).isCertified ? '⭐ ' : ''}{obs.displayName || obs.userEmail || '익명'}
+                      </Text>
+                    </View>
+                    <MaterialIcons name="chevron-right" size={20} color="#ccc" />
+                  </TouchableOpacity>
+                ))}
+              </ScrollView>
+              <TouchableOpacity style={styles.modalCloseButton} onPress={() => setGroupObstacles(null)}>
+                <Text style={styles.modalCloseText}>닫기</Text>
+              </TouchableOpacity>
+            </View>
+          </View>
+        </Modal>
+      )}
 
       {/* 장애물 상세 모달 */}
       {selectedObstacle && (
@@ -1925,6 +2012,25 @@ const styles = StyleSheet.create({
   slopeToggleActive: {
     backgroundColor: '#4CAF50',
   },
+
+  /* 그룹 목록 모달 */
+  groupItem: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+    paddingVertical: 12,
+    borderBottomWidth: 1,
+    borderBottomColor: '#f5f5f5',
+  },
+  groupThumb: {
+    width: 56,
+    height: 56,
+    borderRadius: 10,
+    backgroundColor: '#eee',
+  },
+  groupItemDate: { fontSize: 13, fontWeight: '600', color: '#333' },
+  groupItemCoords: { fontSize: 11, color: '#999', marginTop: 1 },
+  groupItemUser: { fontSize: 11, color: '#aaa', marginTop: 1 },
 
   /* 안내 시작/종료 버튼 */
   startNavBtn: {

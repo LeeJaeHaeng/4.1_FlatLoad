@@ -56,8 +56,10 @@ async def create_obstacle(
 ):
     image_bytes = await photo.read()
 
-    # Firebase 업로드 + YOLO-World 추론 병렬 실행 (속도 최적화)
+    # manual_label이 있으면 AI 추론 스킵 (미리보기에서 이미 분석 완료)
     async def _safe_detect() -> list:
+        if manual_label.strip():
+            return []
         if not detector.MODEL_READY:
             return []
         try:
@@ -72,16 +74,13 @@ async def create_obstacle(
     )
 
     ai_label, ai_confidence, ai_detections_json = None, None, None
-    if detections:
-        top = detections[0]
-        ai_label      = top["label"]
-        ai_confidence = top["confidence"]
-        ai_detections_json = json.dumps(detections, ensure_ascii=False)
-
-    # 수동 레이블이 입력된 경우 AI 결과보다 우선 적용
     if manual_label.strip():
-        ai_label      = manual_label.strip()
-        ai_confidence = None
+        ai_label = manual_label.strip()
+    elif detections:
+        top = detections[0]
+        ai_label           = top["label"]
+        ai_confidence      = top["confidence"]
+        ai_detections_json = json.dumps(detections, ensure_ascii=False)
 
     is_certified = False
     if certified_key:

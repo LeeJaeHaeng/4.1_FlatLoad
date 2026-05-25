@@ -52,6 +52,8 @@ def detect(image_bytes: bytes, conf_thresh: float | None = None) -> list[dict]:
         for box in r.boxes:
             x1, y1, x2, y2 = box.xyxy[0].tolist()
             conf = float(box.conf[0])
+            if conf < threshold:
+                continue
             cls_idx = int(box.cls[0])
             label = YOLO_CLASSES[cls_idx] if cls_idx < len(YOLO_CLASSES) else str(cls_idx)
 

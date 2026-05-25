@@ -30,6 +30,7 @@ import {
 } from '../utils/database';
 import {
   apiCreateObstacle,
+  apiAnalyzeImage,
   apiGetMyObstacles,
   apiGetTopContributors,
   apiUpdateObstacleLabel,
@@ -105,6 +106,7 @@ export default function ContributeScreen() {
   const [capturedUri, setCapturedUri] = useState<string | null>(null);
   const [exifCoords, setExifCoords] = useState<{ latitude: number; longitude: number } | null>(null);
   const [manualLabel, setManualLabel] = useState('');
+  const [analyzing, setAnalyzing] = useState(false);
   const [saving, setSaving] = useState(false);
   const cameraRef = useRef<CameraView>(null);
 
@@ -333,6 +335,20 @@ export default function ContributeScreen() {
     }
   };
 
+  // 미리보기 진입 시 AI 자동 분석
+  useEffect(() => {
+    if (screen !== 'preview' || !capturedUri) return;
+    setAnalyzing(true);
+    setManualLabel('');
+    apiAnalyzeImage(capturedUri)
+      .then(result => {
+        if (result.aiLabel) {
+          setManualLabel(LABEL_KO[result.aiLabel] ?? result.aiLabel);
+        }
+      })
+      .finally(() => setAnalyzing(false));
+  }, [screen, capturedUri]);
+
   const handleCancel = () => {
     setCapturedUri(null);
     setExifCoords(null);
@@ -399,7 +415,7 @@ export default function ContributeScreen() {
           ) : (
             myObstacles.map((item) => {
               const detections: Detection[] = (item as any).aiDetections ?? [];
-              const hasAI = detections.length > 0 || !!(item as any).aiLabel;
+              const hasAI = detections.length > 0 || (!!(item as any).aiLabel && !!((item as any).aiConfidence));
               return (
                 <TouchableOpacity
                   key={item.id}
@@ -681,15 +697,19 @@ export default function ContributeScreen() {
           }
         </Text>
         <View style={styles.manualLabelWrap}>
-          <MaterialIcons name="label-outline" size={18} color="rgba(255,255,255,0.7)" />
+          {analyzing
+            ? <ActivityIndicator size="small" color="rgba(255,255,255,0.7)" />
+            : <MaterialIcons name="label-outline" size={18} color="rgba(255,255,255,0.7)" />
+          }
           <TextInput
             style={styles.manualLabelInput}
-            placeholder="장애물 이름 직접 입력 (선택)"
+            placeholder={analyzing ? 'AI 분석 중...' : '장애물 이름 입력 (선택)'}
             placeholderTextColor="rgba(255,255,255,0.45)"
             value={manualLabel}
             onChangeText={setManualLabel}
             maxLength={50}
             returnKeyType="done"
+            editable={!analyzing}
           />
         </View>
         <View style={styles.previewButtons}>
