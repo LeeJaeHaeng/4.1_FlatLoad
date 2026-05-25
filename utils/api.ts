@@ -190,6 +190,49 @@ export async function apiUpdateObstacleLabel(
   return res.json();
 }
 
+// ── 삭제 알림 ────────────────────────────────────────────────────────
+
+export interface DeleteNotification {
+  id: number;
+  obstacleId: number;
+  reason: string;
+  createdAt: string;
+}
+
+export async function apiGetDeleteNotifications(userId: string): Promise<DeleteNotification[]> {
+  try {
+    const res = await apiFetch(`${API_BASE_URL}/api/route/notifications/${userId}`, undefined, 8000);
+    if (!res.ok) return [];
+    return res.json();
+  } catch {
+    return [];
+  }
+}
+
+export async function apiMarkNotificationRead(notificationId: number): Promise<void> {
+  try {
+    await apiFetch(`${API_BASE_URL}/api/route/notifications/${notificationId}/read`, { method: 'POST' }, 8000);
+  } catch {}
+}
+
+// ── 안전 경로 ────────────────────────────────────────────────────────
+
+export async function apiGetAvoidLocations(
+  fromLat: number,
+  fromLng: number,
+  toLat: number,
+  toLng: number,
+): Promise<{ lat: number; lon: number }[]> {
+  const res = await apiFetch(`${API_BASE_URL}/api/route/avoid-locations`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ from_lat: fromLat, from_lng: fromLng, to_lat: toLat, to_lng: toLng }),
+  }, 10000);
+  if (!res.ok) return [];
+  const data = await res.json();
+  return data.avoid_locations ?? [];
+}
+
 // ── AI 분석 상태 확인 ─────────────────────────────────────────────
 
 export async function apiCheckAiStatus(): Promise<{ ready: boolean; classes: string[] }> {

@@ -54,8 +54,8 @@ export async function toggleApprove(id: number): Promise<{ id: number; isApprove
   return res.json();
 }
 
-export async function deleteObstacle(id: number): Promise<void> {
-  await fetch(`${API}/admin/obstacles/${id}`, { method: "DELETE" });
+export async function deleteObstacle(id: number, reason: string): Promise<void> {
+  await fetch(`${API}/admin/obstacles/${id}?reason=${encodeURIComponent(reason)}`, { method: "DELETE" });
 }
 
 export async function getPosts(): Promise<Post[]> {

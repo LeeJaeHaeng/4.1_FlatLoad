@@ -30,6 +30,8 @@ import {
   apiGetMyObstacles,
   apiGetTopContributors,
   apiUpdateObstacleLabel,
+  apiGetDeleteNotifications,
+  apiMarkNotificationRead,
   ApiObstacle,
 } from '../utils/api';
 import { useAuth } from '../context/AuthContext';
@@ -144,6 +146,23 @@ export default function ContributeScreen() {
     }, [screen, loadListData])
   );
 
+  useFocusEffect(
+    useCallback(() => {
+      const userId = user?.uid;
+      if (!userId) return;
+      apiGetDeleteNotifications(userId).then(notifications => {
+        if (notifications.length === 0) return;
+        const lines = notifications.map(n =>
+          `• 제보 #${n.obstacleId} 삭제 사유: ${n.reason}`
+        ).join('\n\n');
+        Alert.alert('내 제보가 삭제되었습니다', lines, [{
+          text: '확인',
+          onPress: () => notifications.forEach(n => apiMarkNotificationRead(n.id)),
+        }]);
+      });
+    }, [user])
+  );
+
   const enterCamera = async () => {
     if (!cameraPermission?.granted) {
       const result = await requestCameraPermission();
@@ -212,7 +231,7 @@ export default function ContributeScreen() {
   const takePicture = async () => {
     if (!cameraRef.current) return;
     try {
-      const photo = await cameraRef.current.takePictureAsync({ quality: 0.8 });
+      const photo = await cameraRef.current.takePictureAsync({ quality: 0.8, shutterSound: !muted });
       if (photo?.uri) {
         setCapturedUri(photo.uri);
         setScreen('preview');
@@ -595,7 +614,6 @@ export default function ContributeScreen() {
           ref={cameraRef}
           style={StyleSheet.absoluteFill}
           facing={facing}
-          mute={muted}
         />
 
         <SafeAreaView style={styles.cameraTopBar}>

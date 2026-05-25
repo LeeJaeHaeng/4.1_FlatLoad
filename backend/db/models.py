@@ -32,6 +32,17 @@ class Obstacle(Base):
     is_certified  = Column(Boolean, nullable=False, default=False)
 
 
+class DeleteNotification(Base):
+    __tablename__ = "delete_notifications"
+
+    id          = Column(Integer, primary_key=True, autoincrement=True)
+    user_id     = Column(String, nullable=False)
+    obstacle_id = Column(Integer, nullable=False)
+    reason      = Column(String, nullable=False, default="")
+    created_at  = Column(DateTime(timezone=True), server_default=func.now())
+    is_read     = Column(Boolean, nullable=False, default=False)
+
+
 class Vote(Base):
     __tablename__ = "votes"
     __table_args__ = (UniqueConstraint("obstacle_id", "user_id"),)

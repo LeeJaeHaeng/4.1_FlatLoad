@@ -5,7 +5,7 @@ from fastapi import APIRouter, Depends, UploadFile, File, Form, HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, func, update
 from db.database import get_db
-from db.models import Obstacle, Vote, CertifiedUser
+from db.models import Obstacle, Vote, CertifiedUser, DeleteNotification
 from db.schemas import ObstacleOut, VoteRequest, VoteOut, TopContributor
 from services import storage, detector
 
@@ -208,6 +208,7 @@ async def update_obstacle_label(
     await db.commit()
     await db.refresh(obs)
     return _to_out(obs)
+
 
 
 @router.get("/contributors/top", response_model=list[TopContributor])

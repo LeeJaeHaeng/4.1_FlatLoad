@@ -6,7 +6,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, func, delete, update
 from db.database import get_db
-from db.models import Obstacle, Vote, Post, PostLike, Comment, CertifiedUser
+from db.models import Obstacle, Vote, Post, PostLike, Comment, CertifiedUser, DeleteNotification
 from db.schemas import CertifiedUserCreate, CertifiedUserUpdate
 
 router = APIRouter(prefix="/admin", tags=["admin"])
@@ -79,12 +79,19 @@ async def toggle_approve(obstacle_id: int, db: AsyncSession = Depends(get_db)):
 
 
 @router.delete("/obstacles/{obstacle_id}")
-async def delete_obstacle(obstacle_id: int, db: AsyncSession = Depends(get_db)):
+async def delete_obstacle(obstacle_id: int, reason: str = "", db: AsyncSession = Depends(get_db)):
     obs = await db.get(Obstacle, obstacle_id)
     if not obs:
         raise HTTPException(404, "장애물을 찾을 수 없습니다")
 
-    # 로컬 파일 삭제
+    if obs.user_id:
+        notif = DeleteNotification(
+            user_id=obs.user_id,
+            obstacle_id=obstacle_id,
+            reason=reason or "관리자에 의해 삭제되었습니다.",
+        )
+        db.add(notif)
+
     if obs.photo_url:
         filename = obs.photo_url.split("/uploads/")[-1]
         file_path = UPLOADS_DIR / filename

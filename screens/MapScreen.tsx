@@ -11,7 +11,7 @@ import * as Speech from 'expo-speech';
 import { useFocusEffect } from '@react-navigation/native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { getAllObstaclesWithBase64, ObstacleRecord, castVote, getUserVote } from '../utils/database';
-import { apiGetObstacles, apiVoteObstacle, apiGetUserVote } from '../utils/api';
+import { apiGetObstacles, apiVoteObstacle, apiGetUserVote, apiGetAvoidLocations, DeleteNotification } from '../utils/api';
 import { useAuth } from '../context/AuthContext';
 
 const DEFAULT_LAT = 37.5665;
@@ -317,6 +317,7 @@ function buildMapHTML(lat: number, lng: number): string {
       } catch(e) {}
     }
 
+    window.handleMessage = handleMessage;
     window.updateLocation = updateLocation;
     window.updateHeading = updateHeading;
     window.flyToLocation = flyToLocation;
@@ -532,17 +533,8 @@ export default function MapScreen({ navigation }: any) {
     setRouteLoading(true);
     try {
       if (mode === 'safe') {
-        // ── 안전 보행 경로: Valhalla pedestrian + 장애물 우회 ─────
-        const bufDeg = 0.015; // 경로 주변 ~1.5km 버퍼
-        const avoidLocs = obstacles
-          .filter(o =>
-            o.latitude  >= Math.min(fromLat, toLat)  - bufDeg &&
-            o.latitude  <= Math.max(fromLat, toLat)  + bufDeg &&
-            o.longitude >= Math.min(fromLng, toLng)  - bufDeg &&
-            o.longitude <= Math.max(fromLng, toLng)  + bufDeg
-          )
-          .slice(0, 50)
-          .map(o => ({ lat: o.latitude, lon: o.longitude }));
+        // ── 안전 보행 경로: 백엔드에서 신뢰도 기반 장애물 필터링 → Valhalla 호출 ─────
+        const avoidLocs = await apiGetAvoidLocations(fromLat, fromLng, toLat, toLng);
 
         const body: Record<string, any> = {
           locations: [
@@ -576,6 +568,10 @@ export default function MapScreen({ navigation }: any) {
             signal: ctrl.signal,
           });
           data = await res.json();
+        } catch {
+          // Valhalla 연결 실패 시 OSRM으로 폴백
+          await fetchOsrmRoute(fromLat, fromLng, toLat, toLng, 'foot', '#4285F4', 'safe');
+          return;
         } finally {
           clearTimeout(timer);
         }
@@ -1127,8 +1123,16 @@ export default function MapScreen({ navigation }: any) {
         >
           <MaterialIcons name="my-location" size={22} color={location ? '#333' : '#aaa'} />
         </TouchableOpacity>
-        <TouchableOpacity style={styles.mapIconBtn} onPress={showWip} activeOpacity={0.8}>
-          <MaterialIcons name="layers" size={22} color="#333" />
+        <TouchableOpacity
+          style={styles.mapIconBtn}
+          onPress={() => {
+            apiGetObstacles()
+              .then(list => setObstacles(list.map(o => ({ ...o, photoBase64: o.photoUri })) as any))
+              .catch(() => {});
+          }}
+          activeOpacity={0.8}
+        >
+          <MaterialIcons name="refresh" size={22} color="#333" />
         </TouchableOpacity>
         <TouchableOpacity
           style={styles.mapIconBtn}

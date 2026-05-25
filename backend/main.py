@@ -8,7 +8,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 from db.database import create_tables, get_db
 from db.models import CertifiedUser
-from routers import obstacles, community, analyze, admin
+from routers import obstacles, community, analyze, admin, routing
 from services import detector
 
 
@@ -32,6 +32,7 @@ app.include_router(obstacles.router)
 app.include_router(community.router)
 app.include_router(analyze.router)
 app.include_router(admin.router)
+app.include_router(routing.router)
 
 uploads_dir = Path(__file__).parent / "uploads"
 uploads_dir.mkdir(exist_ok=True)
