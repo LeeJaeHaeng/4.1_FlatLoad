@@ -51,6 +51,7 @@ async def create_obstacle(
     user_email: str        = Form(""),
     display_name: str      = Form(""),
     certified_key: str     = Form(""),
+    manual_label: str      = Form(""),
     db: AsyncSession       = Depends(get_db),
 ):
     image_bytes = await photo.read()
@@ -76,6 +77,11 @@ async def create_obstacle(
         ai_label      = top["label"]
         ai_confidence = top["confidence"]
         ai_detections_json = json.dumps(detections, ensure_ascii=False)
+
+    # 수동 레이블이 입력된 경우 AI 결과보다 우선 적용
+    if manual_label.strip():
+        ai_label      = manual_label.strip()
+        ai_confidence = None
 
     is_certified = False
     if certified_key:

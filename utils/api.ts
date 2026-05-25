@@ -43,7 +43,8 @@ export async function apiCreateObstacle(
   userId: string,
   userEmail: string,
   displayName: string,
-  certifiedKey: string = ''
+  certifiedKey: string = '',
+  manualLabel: string = ''
 ): Promise<ApiObstacle> {
   const form = new FormData();
   form.append('photo', { uri: photoUri, name: 'obstacle.jpg', type: 'image/jpeg' } as any);
@@ -53,6 +54,7 @@ export async function apiCreateObstacle(
   form.append('user_email', userEmail);
   form.append('display_name', displayName);
   if (certifiedKey) form.append('certified_key', certifiedKey);
+  if (manualLabel) form.append('manual_label', manualLabel);
 
   const res = await apiFetch(`${API_BASE_URL}/api/obstacles`, { method: 'POST', body: form }, 30000);
   if (!res.ok) throw new Error('장애물 등록 실패');
@@ -231,6 +233,16 @@ export async function apiGetAvoidLocations(
   if (!res.ok) return [];
   const data = await res.json();
   return data.avoid_locations ?? [];
+}
+
+export async function apiGetRamps(lat: number, lng: number): Promise<{ lat: number; lon: number }[]> {
+  try {
+    const res = await apiFetch(`${API_BASE_URL}/api/route/ramps?lat=${lat}&lng=${lng}`, undefined, 20000);
+    if (!res.ok) return [];
+    return res.json();
+  } catch {
+    return [];
+  }
 }
 
 // ── AI 분석 상태 확인 ─────────────────────────────────────────────

@@ -10,6 +10,9 @@ import {
   ScrollView,
   Modal,
   Dimensions,
+  TextInput,
+  KeyboardAvoidingView,
+  Platform,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import AsyncStorage from '@react-native-async-storage/async-storage';
@@ -101,6 +104,7 @@ export default function ContributeScreen() {
   const [muted, setMuted] = useState(false);
   const [capturedUri, setCapturedUri] = useState<string | null>(null);
   const [exifCoords, setExifCoords] = useState<{ latitude: number; longitude: number } | null>(null);
+  const [manualLabel, setManualLabel] = useState('');
   const [saving, setSaving] = useState(false);
   const cameraRef = useRef<CameraView>(null);
 
@@ -279,7 +283,8 @@ export default function ContributeScreen() {
           user?.uid ?? '',
           user?.email ?? '',
           user?.displayName ?? '',
-          certKey
+          certKey,
+          manualLabel.trim()
         );
         aiLabel = result.aiLabel;
         aiConfidence = result.aiConfidence;
@@ -330,6 +335,8 @@ export default function ContributeScreen() {
 
   const handleCancel = () => {
     setCapturedUri(null);
+    setExifCoords(null);
+    setManualLabel('');
     setScreen('list');
   };
 
@@ -451,11 +458,17 @@ export default function ContributeScreen() {
           )}
         </ScrollView>
 
-        {/* 촬영 FAB */}
-        <TouchableOpacity style={styles.fab} onPress={enterCamera} activeOpacity={0.85}>
-          <MaterialIcons name="camera-alt" size={26} color="#fff" />
-          <Text style={styles.fabText}>촬영하기</Text>
-        </TouchableOpacity>
+        {/* FAB 영역 */}
+        <View style={styles.fabRow}>
+          <TouchableOpacity style={styles.fabSecondary} onPress={pickFromGallery} activeOpacity={0.85}>
+            <MaterialIcons name="photo-library" size={24} color="#fff" />
+            <Text style={styles.fabSecondaryText}>갤러리</Text>
+          </TouchableOpacity>
+          <TouchableOpacity style={styles.fab} onPress={enterCamera} activeOpacity={0.85}>
+            <MaterialIcons name="camera-alt" size={26} color="#fff" />
+            <Text style={styles.fabText}>촬영하기</Text>
+          </TouchableOpacity>
+        </View>
 
         {/* 상세 보기 모달 (감지 결과 시각화) */}
         <Modal
@@ -639,9 +652,14 @@ export default function ContributeScreen() {
         </View>
 
         <View style={styles.cameraBottomBar}>
+          <TouchableOpacity style={styles.cameraGalleryBtn} onPress={pickFromGallery} activeOpacity={0.8}>
+            <MaterialIcons name="photo-library" size={28} color="#fff" />
+            <Text style={styles.cameraGalleryText}>갤러리</Text>
+          </TouchableOpacity>
           <TouchableOpacity style={styles.shutterButton} onPress={takePicture} activeOpacity={0.8}>
             <View style={styles.shutterInner} />
           </TouchableOpacity>
+          <View style={styles.cameraGalleryBtn} />
         </View>
       </View>
     );
@@ -649,16 +667,31 @@ export default function ContributeScreen() {
 
   // ── 미리보기 화면 ───────────────────────────────────────────────
   return (
-    <View style={styles.fullScreen}>
+    <KeyboardAvoidingView style={styles.fullScreen} behavior={Platform.OS === 'ios' ? 'padding' : 'height'}>
       {capturedUri && (
         <Image source={{ uri: capturedUri }} style={StyleSheet.absoluteFill} resizeMode="cover" />
       )}
       <View style={styles.previewOverlay} />
       <SafeAreaView style={styles.previewContent}>
-        <Text style={styles.previewTitle}>촬영된 사진</Text>
+        <Text style={styles.previewTitle}>{exifCoords ? '갤러리 사진' : '촬영된 사진'}</Text>
         <Text style={styles.previewSub}>
-          이 사진을 저장하시겠습니까?{'\n'}저장 시 현재 위치와 날짜가 함께 기록되며{'\n'}AI가 자동으로 장애물을 분석합니다.
+          {exifCoords
+            ? `이 사진을 저장하시겠습니까?\n\n📍 사진의 GPS 정보로 위치가 기록됩니다.\n🤖 AI가 자동으로 장애물을 분석합니다.`
+            : `이 사진을 저장하시겠습니까?\n저장 시 현재 위치와 날짜가 함께 기록되며\nAI가 자동으로 장애물을 분석합니다.`
+          }
         </Text>
+        <View style={styles.manualLabelWrap}>
+          <MaterialIcons name="label-outline" size={18} color="rgba(255,255,255,0.7)" />
+          <TextInput
+            style={styles.manualLabelInput}
+            placeholder="장애물 이름 직접 입력 (선택)"
+            placeholderTextColor="rgba(255,255,255,0.45)"
+            value={manualLabel}
+            onChangeText={setManualLabel}
+            maxLength={50}
+            returnKeyType="done"
+          />
+        </View>
         <View style={styles.previewButtons}>
           <TouchableOpacity
             style={[styles.previewBtn, styles.cancelBtn]}
@@ -687,7 +720,7 @@ export default function ContributeScreen() {
           </TouchableOpacity>
         </View>
       </SafeAreaView>
-    </View>
+    </KeyboardAvoidingView>
   );
 }
 
@@ -772,10 +805,30 @@ const styles = StyleSheet.create({
   moreDetectText: { fontSize: 11, color: '#9C27B0', fontWeight: '600' },
 
   // FAB
-  fab: {
+  fabRow: {
     position: 'absolute',
     bottom: 24,
     right: 16,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+  },
+  fabSecondary: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#555',
+    paddingHorizontal: 16,
+    paddingVertical: 14,
+    borderRadius: 30,
+    gap: 6,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.25,
+    shadowRadius: 4,
+    elevation: 5,
+  },
+  fabSecondaryText: { color: '#fff', fontWeight: '600', fontSize: 14 },
+  fab: {
     flexDirection: 'row',
     alignItems: 'center',
     backgroundColor: '#FF5722',
@@ -906,8 +959,17 @@ const styles = StyleSheet.create({
     bottom: 48,
     left: 0,
     right: 0,
+    flexDirection: 'row',
     alignItems: 'center',
+    justifyContent: 'space-around',
+    paddingHorizontal: 32,
   },
+  cameraGalleryBtn: {
+    width: 60,
+    alignItems: 'center',
+    gap: 4,
+  },
+  cameraGalleryText: { color: 'rgba(255,255,255,0.85)', fontSize: 11 },
   shutterButton: {
     width: 72,
     height: 72,
@@ -935,6 +997,24 @@ const styles = StyleSheet.create({
     textAlign: 'center',
     marginBottom: 28,
     lineHeight: 22,
+  },
+  manualLabelWrap: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    backgroundColor: 'rgba(255,255,255,0.15)',
+    borderWidth: 1,
+    borderColor: 'rgba(255,255,255,0.35)',
+    borderRadius: 12,
+    paddingHorizontal: 14,
+    paddingVertical: 10,
+    marginBottom: 16,
+  },
+  manualLabelInput: {
+    flex: 1,
+    color: '#fff',
+    fontSize: 15,
+    padding: 0,
   },
   previewButtons: { flexDirection: 'row', gap: 12 },
   previewBtn: {

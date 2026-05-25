@@ -10,8 +10,8 @@ import { Gyroscope, Accelerometer, Magnetometer } from 'expo-sensors';
 import * as Speech from 'expo-speech';
 import { useFocusEffect } from '@react-navigation/native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import { getAllObstaclesWithBase64, ObstacleRecord, castVote, getUserVote } from '../utils/database';
-import { apiGetObstacles, apiVoteObstacle, apiGetUserVote, apiGetAvoidLocations, DeleteNotification } from '../utils/api';
+import { getAllObstaclesWithBase64, ObstacleRecord } from '../utils/database';
+import { apiGetObstacles, apiVoteObstacle, apiGetUserVote, apiGetAvoidLocations, apiGetRamps, DeleteNotification } from '../utils/api';
 import { useAuth } from '../context/AuthContext';
 
 const DEFAULT_LAT = 37.5665;
@@ -61,13 +61,14 @@ function speak(text: string) {
 // 세 필터 모두 Kakao 로컬 검색 사용
 // 경사로: 단일 키워드가 없어 여러 키워드를 병렬 조회 후 합산
 type FilterCfg =
-  | { apiType: 'kakao'; facilityType: string; keywords: string[] };
+  | { apiType: 'kakao'; facilityType: string; keywords: string[] }
+  | { apiType: 'overpass'; facilityType: string; query: (lat: number, lng: number) => string };
 
 const FILTER_CFG: Record<string, FilterCfg> = {
   '경사로': {
     apiType: 'kakao',
     facilityType: 'ramp',
-    keywords: ['무장애', '배리어프리', '휠체어경사로'],
+    keywords: ['경사로'],
   },
   '엘리베이터': {
     apiType: 'kakao',
@@ -382,6 +383,7 @@ export default function MapScreen({ navigation }: any) {
   const [filterLoading, setFilterLoading] = useState<string | null>(null);
   const [obstacleFilter, setObstacleFilter] = useState<'all' | 'certified'>('all');
   const [showObstacleFilterModal, setShowObstacleFilterModal] = useState(false);
+  const [avoidSlopes, setAvoidSlopes] = useState(false);
 
   // TTS: 내비게이션 시작/종료 (항상 한국어 레이블 사용)
   useEffect(() => {
@@ -547,10 +549,10 @@ export default function MapScreen({ navigation }: any) {
           costing_options: {
             pedestrian: {
               walking_speed: 4.5,
-              step_penalty: 30,
+              step_penalty: avoidSlopes ? 60 : 30,
               alley_factor: 2.0,
               use_roads: 0.5,
-              use_hills: 0.5,
+              use_hills: avoidSlopes ? 0.05 : 0.5,
               max_hiking_difficulty: 1,
             },
           },
@@ -674,10 +676,9 @@ export default function MapScreen({ navigation }: any) {
     const lngs = routePts.map(p => p[1]);
     const bbox = `${Math.min(...lats) - 0.001},${Math.min(...lngs) - 0.001},${Math.max(...lats) + 0.001},${Math.max(...lngs) + 0.001}`;
     try {
-      const query = `[out:json][timeout:15];(node["highway"="steps"](${bbox});way["highway"="steps"](${bbox});node["incline"~"steep"](${bbox}););out center;`;
+      const query = `[out:json][timeout:15];(node["highway"="steps"](${bbox});way["highway"="steps"](${bbox});node["incline"~"steep"](${bbox});way["incline"](${bbox}););out center;`;
       const res = await fetch('https://overpass-api.de/api/interpreter', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
         body: `data=${encodeURIComponent(query)}`,
       });
       const data = await res.json();
@@ -710,43 +711,54 @@ export default function MapScreen({ navigation }: any) {
     setFilterLoading(filterName);
     try {
       let count = 0;
-
-      // ── Kakao 로컬 검색 ────────────────────────────────────────────
-      if (!KAKAO_KEY || KAKAO_KEY === '여기에_카카오_REST_API_키_입력') {
-        Alert.alert('설정 필요', '.env 파일에 EXPO_PUBLIC_KAKAO_REST_KEY를 입력해주세요.');
-        return;
-      }
-
-      // 중복 좌표 제거용 Set
       const seen = new Set<string>();
 
-      // 키워드별 순차 조회 (경사로는 3개 키워드)
-      for (const keyword of cfg.keywords) {
-        for (let page = 1; page <= 3; page++) {
-          const url =
-            `https://dapi.kakao.com/v2/local/search/keyword.json` +
-            `?query=${encodeURIComponent(keyword)}` +
-            `&x=${location.lng}&y=${location.lat}` +
-            `&radius=3000&size=15&page=${page}`;
-          const res = await fetch(url, {
-            headers: { Authorization: `KakaoAK ${KAKAO_KEY}` },
-          });
-          if (!res.ok) throw new Error(`Kakao API 오류: ${res.status}`);
-          const data = await res.json();
-          const docs: any[] = data.documents ?? [];
-          docs.forEach((doc: any) => {
-            const lat = parseFloat(doc.y);
-            const lng = parseFloat(doc.x);
-            const key = `${lat.toFixed(5)},${lng.toFixed(5)}`;
-            if (lat && lng && !seen.has(key)) {
-              seen.add(key);
-              webViewRef.current?.injectJavaScript(
-                `addFacilityMarker(${lat}, ${lng}, '${cfg.facilityType}'); true;`
-              );
-              count++;
-            }
-          });
-          if (data.meta?.is_end) break;
+      if (cfg.apiType === 'overpass') {
+        // ── 백엔드 프록시를 통한 경사로 검색 (Overpass 직접 호출 406 우회) ──
+        const ramps = await apiGetRamps(location.lat, location.lng);
+        ramps.forEach(({ lat, lon }) => {
+          const key = `${lat.toFixed(5)},${lon.toFixed(5)}`;
+          if (!seen.has(key)) {
+            seen.add(key);
+            webViewRef.current?.injectJavaScript(
+              `addFacilityMarker(${lat}, ${lon}, '${cfg.facilityType}'); true;`
+            );
+            count++;
+          }
+        });
+      } else {
+        // ── Kakao 로컬 검색 ───────────────────────────────────────────
+        if (!KAKAO_KEY || KAKAO_KEY === '여기에_카카오_REST_API_키_입력') {
+          Alert.alert('설정 필요', '.env 파일에 EXPO_PUBLIC_KAKAO_REST_KEY를 입력해주세요.');
+          return;
+        }
+
+        for (const keyword of cfg.keywords) {
+          for (let page = 1; page <= 3; page++) {
+            const url =
+              `https://dapi.kakao.com/v2/local/search/keyword.json` +
+              `?query=${encodeURIComponent(keyword)}` +
+              `&x=${location.lng}&y=${location.lat}` +
+              `&radius=3000&size=15&page=${page}`;
+            const res = await fetch(url, {
+              headers: { Authorization: `KakaoAK ${KAKAO_KEY}` },
+            });
+            if (!res.ok) throw new Error(`Kakao API 오류: ${res.status}`);
+            const data = await res.json();
+            (data.documents ?? []).forEach((doc: any) => {
+              const lat = parseFloat(doc.y);
+              const lng = parseFloat(doc.x);
+              const key = `${lat.toFixed(5)},${lng.toFixed(5)}`;
+              if (lat && lng && !seen.has(key)) {
+                seen.add(key);
+                webViewRef.current?.injectJavaScript(
+                  `addFacilityMarker(${lat}, ${lng}, '${cfg.facilityType}'); true;`
+                );
+                count++;
+              }
+            });
+            if (data.meta?.is_end) break;
+          }
         }
       }
 
@@ -918,9 +930,7 @@ export default function MapScreen({ navigation }: any) {
   useEffect(() => {
     if (!selectedObstacle) { setVoteState(null); return; }
     const userId = user?.uid ?? '';
-    Promise.all([
-      getUserVote(selectedObstacle.id, userId),
-    ]).then(([userVote]) => {
+    apiGetUserVote(selectedObstacle.id, userId).then(userVote => {
       setVoteState({
         likes: selectedObstacle.likes,
         dislikes: selectedObstacle.dislikes,
@@ -931,14 +941,18 @@ export default function MapScreen({ navigation }: any) {
 
   const handleVote = async (voteType: 'like' | 'dislike') => {
     if (!selectedObstacle || !user) return;
-    const result = await castVote(selectedObstacle.id, user.uid, voteType);
-    setVoteState(result);
-    setObstacles(prev =>
-      prev.map(o => o.id === selectedObstacle.id
-        ? { ...o, likes: result.likes, dislikes: result.dislikes }
-        : o
-      )
-    );
+    try {
+      const result = await apiVoteObstacle(selectedObstacle.id, user.uid, voteType);
+      setVoteState(result);
+      setObstacles(prev =>
+        prev.map(o => o.id === selectedObstacle.id
+          ? { ...o, likes: result.likes, dislikes: result.dislikes }
+          : o
+        )
+      );
+    } catch {
+      Alert.alert('오류', '투표에 실패했습니다. 다시 시도해주세요.');
+    }
   };
 
   useEffect(() => {
@@ -1079,20 +1093,33 @@ export default function MapScreen({ navigation }: any) {
             const active = activeFilters.has(name);
             const loading = filterLoading === name;
             return (
-              <TouchableOpacity
-                key={name}
-                style={[styles.filterChip, active && styles.filterChipActive]}
-                onPress={() => toggleFilter(name)}
-                activeOpacity={0.8}
-                disabled={loading}
-              >
-                {loading
-                  ? <ActivityIndicator size={12} color={active ? '#fff' : '#555'} />
-                  : <Text style={active ? styles.filterChipActiveText : styles.filterChipText}>
-                      {name === '경사로' ? '♿ 경사로' : name === '엘리베이터' ? '🛗 엘리베이터' : '🚻 장애인화장실'}
+              <React.Fragment key={name}>
+                <TouchableOpacity
+                  style={[styles.filterChip, active && styles.filterChipActive]}
+                  onPress={() => toggleFilter(name)}
+                  activeOpacity={0.8}
+                  disabled={loading}
+                >
+                  {loading
+                    ? <ActivityIndicator size={12} color={active ? '#fff' : '#555'} />
+                    : <Text style={active ? styles.filterChipActiveText : styles.filterChipText}>
+                        {name === '경사로' ? '♿ 경사로' : name === '엘리베이터' ? '🛗 엘리베이터' : '🚻 장애인화장실'}
+                      </Text>
+                  }
+                </TouchableOpacity>
+                {name === '경사로' && (
+                  <TouchableOpacity
+                    style={[styles.filterChip, avoidSlopes && styles.slopeToggleActive]}
+                    onPress={() => setAvoidSlopes(v => !v)}
+                    activeOpacity={0.8}
+                  >
+                    <MaterialIcons name="trending-flat" size={14} color={avoidSlopes ? '#fff' : '#555'} />
+                    <Text style={avoidSlopes ? styles.filterChipActiveText : styles.filterChipText}>
+                      {' '}경사 회피
                     </Text>
-                }
-              </TouchableOpacity>
+                  </TouchableOpacity>
+                )}
+              </React.Fragment>
             );
           })}
         </ScrollView>
@@ -1893,6 +1920,10 @@ const styles = StyleSheet.create({
   navRerouteText: {
     fontSize: 13,
     color: '#aaa',
+  },
+
+  slopeToggleActive: {
+    backgroundColor: '#4CAF50',
   },
 
   /* 안내 시작/종료 버튼 */

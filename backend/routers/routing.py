@@ -2,6 +2,7 @@ from fastapi import APIRouter, Depends
 from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
+import httpx
 from db.database import get_db
 from db.models import Obstacle, DeleteNotification
 
@@ -13,6 +14,40 @@ class AvoidLocationsRequest(BaseModel):
     from_lng: float
     to_lat: float
     to_lng: float
+
+
+@router.get("/ramps")
+async def get_ramps(lat: float, lng: float):
+    """주변 경사로·연석경사(kerb) 좌표 목록 반환. 앱 대신 서버에서 Overpass 호출."""
+    query = (
+        f"[out:json][timeout:15];"
+        f"(nwr[\"ramp\"=\"yes\"](around:1500,{lat},{lng});"
+        f"nwr[\"ramp:wheelchair\"=\"yes\"](around:1500,{lat},{lng});"
+        f"node[\"kerb\"=\"lowered\"](around:1500,{lat},{lng});"
+        f"node[\"kerb\"=\"flush\"](around:1500,{lat},{lng}););"
+        f"out center;"
+    )
+    try:
+        async with httpx.AsyncClient(timeout=20.0) as client:
+            res = await client.post(
+                "https://overpass-api.de/api/interpreter",
+                data={"data": query},
+                headers={"Content-Type": "application/x-www-form-urlencoded"},
+            )
+        elements = res.json().get("elements", [])
+        result = []
+        seen = set()
+        for el in elements:
+            elat = el.get("lat") or (el.get("center") or {}).get("lat")
+            elng = el.get("lon") or (el.get("center") or {}).get("lon")
+            if elat and elng:
+                key = f"{elat:.5f},{elng:.5f}"
+                if key not in seen:
+                    seen.add(key)
+                    result.append({"lat": elat, "lon": elng})
+        return result
+    except Exception:
+        return []
 
 
 @router.post("/avoid-locations")

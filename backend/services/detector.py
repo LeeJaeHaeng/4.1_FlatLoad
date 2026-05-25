@@ -6,10 +6,9 @@ import numpy as np
 from PIL import Image
 
 YOLO_CLASSES = [
-    "person", "pole", "bollard", "tree_trunk",
-    "car", "traffic_light", "truck", "bus",
-    "traffic_sign", "motorcycle", "movable_signage",
-    "potted_plant", "wheelchair",
+    "pole", "bollard", "tree_trunk",
+    "traffic_light", "truck", "bus",
+    "motorcycle", "potted_plant",
 ]
 
 SCORE_THRESH = 0.3
