@@ -13,6 +13,7 @@ import {
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { MaterialIcons } from '@expo/vector-icons';
+import { useAuth } from '../context/AuthContext';
 
 const API_BASE = process.env.EXPO_PUBLIC_API_BASE_URL ?? 'http://localhost:8000';
 const CERT_KEY_STORAGE = '@flatroad/certified_key';
@@ -25,6 +26,7 @@ interface CertInfo {
 }
 
 export default function MyPageScreen() {
+  const { user, logout } = useAuth();
   const [muteShutter, setMuteShutter] = useState(false);
   const [certKeyInput, setCertKeyInput] = useState('');
   const [certInfo, setCertInfo] = useState<CertInfo | null>(null);
@@ -97,13 +99,23 @@ export default function MyPageScreen() {
         {/* 프로필 카드 */}
         <View style={styles.profileCard}>
           <View style={styles.avatarFallback}>
-            <MaterialIcons name="person" size={40} color="#fff" />
+            <Text style={styles.avatarInitial}>
+              {user?.displayName?.[0]?.toUpperCase() ?? '?'}
+            </Text>
           </View>
-          <View style={styles.demoBadge}>
-            <Text style={styles.demoBadgeText}>DEMO</Text>
-          </View>
-          <Text style={styles.displayName}>데모 사용자</Text>
-          <Text style={styles.email}>demo@flatroad.app</Text>
+          <Text style={styles.displayName}>{user?.displayName ?? '사용자'}</Text>
+          <Text style={styles.email}>uid: {user?.uid?.slice(0, 8) ?? '—'}…</Text>
+          <TouchableOpacity
+            style={styles.logoutBtn}
+            onPress={() =>
+              Alert.alert('닉네임 변경', '닉네임을 초기화하고 다시 입력하시겠습니까?', [
+                { text: '취소', style: 'cancel' },
+                { text: '초기화', style: 'destructive', onPress: logout },
+              ])
+            }
+          >
+            <Text style={styles.logoutBtnText}>닉네임 초기화</Text>
+          </TouchableOpacity>
         </View>
 
         {/* 설정 섹션 */}
@@ -224,18 +236,22 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     alignItems: 'center',
   },
-  demoBadge: {
-    marginTop: 10,
-    backgroundColor: '#F5A623',
-    borderRadius: 8,
-    paddingHorizontal: 10,
-    paddingVertical: 3,
-  },
-  demoBadgeText: {
-    fontSize: 11,
+  avatarInitial: {
+    fontSize: 36,
     fontWeight: '700',
     color: '#fff',
-    letterSpacing: 1,
+  },
+  logoutBtn: {
+    marginTop: 12,
+    paddingHorizontal: 16,
+    paddingVertical: 7,
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: '#ddd',
+  },
+  logoutBtnText: {
+    fontSize: 13,
+    color: '#888',
   },
   displayName: {
     marginTop: 10,

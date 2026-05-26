@@ -170,6 +170,7 @@ export default function ContributeScreen() {
   );
 
   const enterCamera = async () => {
+    if (!user) return;
     if (!cameraPermission?.granted) {
       const result = await requestCameraPermission();
       if (!result.granted) {
@@ -181,6 +182,7 @@ export default function ContributeScreen() {
   };
 
   const pickFromGallery = async () => {
+    if (!user) return;
     const { status } = await ImagePicker.requestMediaLibraryPermissionsAsync();
     if (status !== 'granted') {
       Alert.alert('권한 필요', '갤러리 접근 권한이 필요합니다.');

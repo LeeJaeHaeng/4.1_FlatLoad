@@ -1378,7 +1378,7 @@ export default function MapScreen({ navigation }: any) {
             <Text style={styles.filterModalTitle}>장애물 필터</Text>
             {([
               { key: 'all',       label: '전체 장애물',          desc: '모든 사용자가 올린 장애물 표시', icon: 'location-on' },
-              { key: 'certified', label: '⭐ 인증 사용자 장애물', desc: '인증된 기관 사용자의 장애물만 표시', icon: 'verified' },
+              { key: 'certified', label: '⭐ 인증 사용자 장애물', desc: '인증된 기관이 올린 장애물만 표시', icon: 'verified' },
             ] as const).map(opt => (
               <TouchableOpacity
                 key={opt.key}
