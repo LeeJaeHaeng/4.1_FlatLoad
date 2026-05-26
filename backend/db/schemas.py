@@ -13,7 +13,7 @@ class ObstacleCreate(BaseModel):
 
 class ObstacleOut(BaseModel):
     id: int
-    photoUri: str           # 앱 인터페이스 맞춤 (camelCase)
+    photoUri: str
     latitude: float
     longitude: float
     createdAt: str
@@ -24,7 +24,8 @@ class ObstacleOut(BaseModel):
     dislikes: int
     aiLabel: Optional[str] = None
     aiConfidence: Optional[float] = None
-    aiDetections: Optional[list] = None  # [{label,confidence,bbox:[cx,cy,w,h]}]
+    aiDetections: Optional[list] = None
+    isCertified: bool = False
 
     model_config = {"from_attributes": True}
 
@@ -51,6 +52,7 @@ class PostCreate(BaseModel):
     user_id: str = ""
     user_email: str = ""
     display_name: str = ""
+    certified_key: str = ""
 
 class PostOut(BaseModel):
     id: int
@@ -62,6 +64,7 @@ class PostOut(BaseModel):
     createdAt: str
     likes: int
     commentCount: int = 0
+    isCertified: bool = False
 
     model_config = {"from_attributes": True}
 
@@ -70,6 +73,7 @@ class CommentCreate(BaseModel):
     user_id: str = ""
     user_email: str = ""
     display_name: str = ""
+    certified_key: str = ""
 
 class CommentOut(BaseModel):
     id: int
@@ -78,6 +82,28 @@ class CommentOut(BaseModel):
     userId: str
     userEmail: str
     displayName: str
+    createdAt: str
+    isCertified: bool = False
+
+    model_config = {"from_attributes": True}
+
+# ── 인증 사용자 ────────────────────────────────────────────────────
+
+class CertifiedUserCreate(BaseModel):
+    user_id: str
+    display_name: str = ""
+    certified_key: str
+
+class CertifiedUserUpdate(BaseModel):
+    display_name: Optional[str] = None
+    certified_key: Optional[str] = None
+
+class DeleteNotificationOut(BaseModel):
+    id: int
+    userId: str
+    obstacleId: int
+    reason: Optional[str] = None
+    isRead: bool
     createdAt: str
 
     model_config = {"from_attributes": True}

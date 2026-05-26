@@ -29,6 +29,7 @@ import {
   apiCreateObstacle,
   apiGetMyObstacles,
   apiGetTopContributors,
+  apiGetDeleteNotifications,
   ApiObstacle,
 } from '../utils/api';
 import { useAuth } from '../context/AuthContext';
@@ -127,6 +128,14 @@ export default function ContributeScreen() {
       ]);
       setMyObstacles(obstacles as ObstacleRecord[]);
       setTopContributors(top as TopContributor[]);
+      if (user) {
+        apiGetDeleteNotifications(user.uid)
+          .then(notifs => {
+            const unread = notifs.filter(n => !n.isRead).length;
+            AsyncStorage.setItem('notif.unreadCount', String(unread));
+          })
+          .catch(() => {});
+      }
     } finally {
       setListLoading(false);
     }
@@ -139,6 +148,10 @@ export default function ContributeScreen() {
   );
 
   const enterCamera = async () => {
+    if (!user) {
+      Alert.alert('닉네임 필요', '카메라를 사용하려면 먼저 닉네임을 설정해주세요.');
+      return;
+    }
     if (!cameraPermission?.granted) {
       const result = await requestCameraPermission();
       if (!result.granted) {
@@ -150,6 +163,10 @@ export default function ContributeScreen() {
   };
 
   const pickFromGallery = async () => {
+    if (!user) {
+      Alert.alert('닉네임 필요', '갤러리를 사용하려면 먼저 닉네임을 설정해주세요.');
+      return;
+    }
     const { status } = await ImagePicker.requestMediaLibraryPermissionsAsync();
     if (status !== 'granted') {
       Alert.alert('권한 필요', '갤러리 접근 권한이 필요합니다.');
@@ -206,7 +223,7 @@ export default function ContributeScreen() {
   const takePicture = async () => {
     if (!cameraRef.current) return;
     try {
-      const photo = await cameraRef.current.takePictureAsync({ quality: 0.8 });
+      const photo = await cameraRef.current.takePictureAsync({ quality: 0.8, shutterSound: !muted });
       if (photo?.uri) {
         setCapturedUri(photo.uri);
         setScreen('preview');
@@ -240,6 +257,8 @@ export default function ContributeScreen() {
         longitude = loc.coords.longitude;
       }
 
+      const certifiedKey = await AsyncStorage.getItem('certified_key').then(v => v ?? undefined);
+
       let aiLabel: string | null = null;
       let aiConfidence: number | null = null;
       try {
@@ -249,7 +268,8 @@ export default function ContributeScreen() {
           longitude,
           user?.uid ?? '',
           user?.email ?? '',
-          user?.displayName ?? ''
+          user?.displayName ?? '',
+          certifiedKey
         );
         aiLabel = result.aiLabel;
         aiConfidence = result.aiConfidence;
@@ -333,7 +353,12 @@ export default function ContributeScreen() {
           </View>
 
           {/* 내 기여 목록 */}
-          <Text style={styles.sectionTitle}>내 기여 목록</Text>
+          <View style={styles.sectionHeader}>
+            <Text style={styles.sectionTitle}>내 기여 목록</Text>
+            <TouchableOpacity onPress={loadListData} disabled={listLoading} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
+              <MaterialIcons name="refresh" size={20} color={listLoading ? '#ccc' : '#4285F4'} />
+            </TouchableOpacity>
+          </View>
           {!user ? (
             <View style={styles.loginPrompt}>
               <MaterialIcons name="account-circle" size={40} color="#ccc" />
@@ -619,7 +644,8 @@ const styles = StyleSheet.create({
   leaderLikeCount: { fontSize: 15, fontWeight: 'bold', color: '#4285F4' },
 
   // 내 기여 목록
-  sectionTitle: { fontSize: 15, fontWeight: 'bold', color: '#333', marginBottom: 10 },
+  sectionHeader: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 10 },
+  sectionTitle: { fontSize: 15, fontWeight: 'bold', color: '#333' },
   loginPrompt: { alignItems: 'center', paddingVertical: 32, gap: 8 },
   loginPromptText: { fontSize: 13, color: '#aaa', textAlign: 'center' },
   emptyWrap: { alignItems: 'center', paddingVertical: 32, gap: 8 },

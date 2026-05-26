@@ -5,19 +5,88 @@ import {
   StyleSheet,
   Switch,
   ScrollView,
+  TextInput,
+  TouchableOpacity,
+  ActivityIndicator,
+  Alert,
 } from 'react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { MaterialIcons } from '@expo/vector-icons';
+import { useAuth } from '../context/AuthContext';
+
+const API_BASE = process.env.EXPO_PUBLIC_API_BASE_URL ?? 'http://localhost:8000';
+const CERT_KEY_STORAGE = '@flatroad/certified_key';
+const CERT_INFO_STORAGE = '@flatroad/certified_info';
+
+interface CertInfo {
+  name: string;
+  affiliation: string;
+  daysLeft: number;
+}
 
 export default function MyPageScreen() {
+  const { user, logout } = useAuth();
   const [muteShutter, setMuteShutter] = useState(false);
+  const [certKeyInput, setCertKeyInput] = useState('');
+  const [certInfo, setCertInfo] = useState<CertInfo | null>(null);
+  const [certLoading, setCertLoading] = useState(false);
 
   useEffect(() => {
     AsyncStorage.getItem('settings.muteShutter').then((val) => {
       if (val !== null) setMuteShutter(val === 'true');
     });
+    AsyncStorage.getItem(CERT_INFO_STORAGE).then((val) => {
+      if (val) {
+        try { setCertInfo(JSON.parse(val)); } catch {}
+      }
+    });
   }, []);
+
+  const verifyCertKey = async () => {
+    const key = certKeyInput.trim();
+    if (!key) return;
+    setCertLoading(true);
+    try {
+      const res = await fetch(`${API_BASE}/api/certified/verify`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ api_key: key }),
+      });
+      const data = await res.json();
+      if (data.valid) {
+        const info: CertInfo = { name: data.name, affiliation: data.affiliation, daysLeft: data.daysLeft };
+        setCertInfo(info);
+        await AsyncStorage.setItem(CERT_KEY_STORAGE, key);
+        await AsyncStorage.setItem(CERT_INFO_STORAGE, JSON.stringify(info));
+        setCertKeyInput('');
+        Alert.alert('인증 완료', `${data.name}(${data.affiliation}) 인증된 사용자로 등록되었습니다.`);
+      } else if (data.reason === 'expired') {
+        Alert.alert('만료된 키', '유효 기간이 지난 인증 키입니다. 새 키를 발급받으세요.');
+      } else {
+        Alert.alert('인증 실패', '올바르지 않은 인증 키입니다.');
+      }
+    } catch {
+      Alert.alert('오류', '서버에 연결할 수 없습니다.');
+    } finally {
+      setCertLoading(false);
+    }
+  };
+
+  const removeCert = async () => {
+    Alert.alert('인증 해제', '인증된 사용자 상태를 해제하시겠습니까?', [
+      { text: '취소', style: 'cancel' },
+      {
+        text: '해제',
+        style: 'destructive',
+        onPress: async () => {
+          await AsyncStorage.removeItem(CERT_KEY_STORAGE);
+          await AsyncStorage.removeItem(CERT_INFO_STORAGE);
+          setCertInfo(null);
+        },
+      },
+    ]);
+  };
 
   const toggleMuteShutter = (value: boolean) => {
     setMuteShutter(value);
@@ -30,13 +99,23 @@ export default function MyPageScreen() {
         {/* 프로필 카드 */}
         <View style={styles.profileCard}>
           <View style={styles.avatarFallback}>
-            <MaterialIcons name="person" size={40} color="#fff" />
+            <Text style={styles.avatarInitial}>
+              {user?.displayName?.[0]?.toUpperCase() ?? '?'}
+            </Text>
           </View>
-          <View style={styles.demoBadge}>
-            <Text style={styles.demoBadgeText}>DEMO</Text>
-          </View>
-          <Text style={styles.displayName}>데모 사용자</Text>
-          <Text style={styles.email}>demo@flatroad.app</Text>
+          <Text style={styles.displayName}>{user?.displayName ?? '사용자'}</Text>
+          <Text style={styles.email}>uid: {user?.uid?.slice(0, 8) ?? '—'}…</Text>
+          <TouchableOpacity
+            style={styles.logoutBtn}
+            onPress={() =>
+              Alert.alert('닉네임 변경', '닉네임을 초기화하고 다시 입력하시겠습니까?', [
+                { text: '취소', style: 'cancel' },
+                { text: '초기화', style: 'destructive', onPress: logout },
+              ])
+            }
+          >
+            <Text style={styles.logoutBtnText}>닉네임 초기화</Text>
+          </TouchableOpacity>
         </View>
 
         {/* 설정 섹션 */}
@@ -55,6 +134,55 @@ export default function MyPageScreen() {
               thumbColor="#fff"
             />
           </View>
+        </View>
+
+        {/* 인증 사용자 섹션 */}
+        <View style={styles.certSection}>
+          <Text style={styles.sectionTitle}>기관 인증</Text>
+          {certInfo ? (
+            <View style={styles.certActiveBox}>
+              <View style={styles.certActiveHeader}>
+                <Text style={styles.certStar}>⭐</Text>
+                <Text style={styles.certActiveTitle}>인증된 사용자입니다</Text>
+              </View>
+              <Text style={styles.certName}>{certInfo.name}</Text>
+              {certInfo.affiliation ? (
+                <Text style={styles.certAffiliation}>{certInfo.affiliation}</Text>
+              ) : null}
+              <Text style={styles.certDays}>유효 기간 {certInfo.daysLeft}일 남음</Text>
+              <TouchableOpacity onPress={removeCert} style={styles.certRemoveBtn}>
+                <Text style={styles.certRemoveBtnText}>인증 해제</Text>
+              </TouchableOpacity>
+            </View>
+          ) : (
+            <View>
+              <Text style={styles.certDesc}>
+                기관 인증 코드를 입력하면 기여 내용에 ⭐ 인증 마크가 표시됩니다.
+              </Text>
+              <View style={styles.certInputRow}>
+                <TextInput
+                  style={styles.certInput}
+                  value={certKeyInput}
+                  onChangeText={setCertKeyInput}
+                  placeholder="인증 코드 입력 (64자)"
+                  placeholderTextColor="#bbb"
+                  autoCapitalize="none"
+                  autoCorrect={false}
+                />
+                <TouchableOpacity
+                  style={[styles.certVerifyBtn, certLoading && { opacity: 0.6 }]}
+                  onPress={verifyCertKey}
+                  disabled={certLoading || !certKeyInput.trim()}
+                >
+                  {certLoading ? (
+                    <ActivityIndicator size="small" color="#fff" />
+                  ) : (
+                    <Text style={styles.certVerifyBtnText}>확인</Text>
+                  )}
+                </TouchableOpacity>
+              </View>
+            </View>
+          )}
         </View>
 
         {/* 앱 정보 */}
@@ -108,18 +236,22 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     alignItems: 'center',
   },
-  demoBadge: {
-    marginTop: 10,
-    backgroundColor: '#F5A623',
-    borderRadius: 8,
-    paddingHorizontal: 10,
-    paddingVertical: 3,
-  },
-  demoBadgeText: {
-    fontSize: 11,
+  avatarInitial: {
+    fontSize: 36,
     fontWeight: '700',
     color: '#fff',
-    letterSpacing: 1,
+  },
+  logoutBtn: {
+    marginTop: 12,
+    paddingHorizontal: 16,
+    paddingVertical: 7,
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: '#ddd',
+  },
+  logoutBtnText: {
+    fontSize: 13,
+    color: '#888',
   },
   displayName: {
     marginTop: 10,
@@ -200,5 +332,96 @@ const styles = StyleSheet.create({
   infoValue: {
     fontSize: 14,
     color: '#333',
+  },
+  certSection: {
+    backgroundColor: '#fff',
+    borderRadius: 16,
+    padding: 16,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 1 },
+    shadowOpacity: 0.06,
+    shadowRadius: 3,
+    elevation: 2,
+  },
+  certDesc: {
+    fontSize: 13,
+    color: '#888',
+    marginBottom: 10,
+    lineHeight: 18,
+  },
+  certInputRow: {
+    flexDirection: 'row',
+    gap: 8,
+  },
+  certInput: {
+    flex: 1,
+    borderWidth: 1,
+    borderColor: '#ddd',
+    borderRadius: 10,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    fontSize: 13,
+    color: '#333',
+  },
+  certVerifyBtn: {
+    backgroundColor: '#4285F4',
+    borderRadius: 10,
+    paddingHorizontal: 16,
+    paddingVertical: 10,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  certVerifyBtnText: {
+    color: '#fff',
+    fontWeight: '700',
+    fontSize: 14,
+  },
+  certActiveBox: {
+    backgroundColor: '#E8F0FE',
+    borderRadius: 12,
+    padding: 14,
+    gap: 4,
+  },
+  certActiveHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    marginBottom: 4,
+  },
+  certStar: {
+    fontSize: 20,
+  },
+  certActiveTitle: {
+    fontSize: 15,
+    fontWeight: '700',
+    color: '#1967D2',
+  },
+  certName: {
+    fontSize: 16,
+    fontWeight: '600',
+    color: '#1a1a1a',
+  },
+  certAffiliation: {
+    fontSize: 13,
+    color: '#555',
+  },
+  certDays: {
+    fontSize: 12,
+    color: '#888',
+    marginTop: 4,
+  },
+  certRemoveBtn: {
+    marginTop: 10,
+    alignSelf: 'flex-start',
+    paddingVertical: 6,
+    paddingHorizontal: 12,
+    borderRadius: 8,
+    backgroundColor: '#fff',
+    borderWidth: 1,
+    borderColor: '#ddd',
+  },
+  certRemoveBtnText: {
+    fontSize: 12,
+    color: '#888',
   },
 });

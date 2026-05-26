@@ -32,3 +32,38 @@ async def create_tables():
         await conn.execute(text(
             "ALTER TABLE obstacles ADD COLUMN IF NOT EXISTS is_approved BOOLEAN NOT NULL DEFAULT TRUE"
         ))
+        await conn.execute(text(
+            "ALTER TABLE obstacles ADD COLUMN IF NOT EXISTS is_certified BOOLEAN NOT NULL DEFAULT FALSE"
+        ))
+        await conn.execute(text(
+            "ALTER TABLE posts ADD COLUMN IF NOT EXISTS is_certified BOOLEAN NOT NULL DEFAULT FALSE"
+        ))
+        await conn.execute(text(
+            "ALTER TABLE comments ADD COLUMN IF NOT EXISTS is_certified BOOLEAN NOT NULL DEFAULT FALSE"
+        ))
+        await conn.execute(text("""
+            CREATE TABLE IF NOT EXISTS certified_users (
+                id SERIAL PRIMARY KEY,
+                user_id VARCHAR NOT NULL UNIQUE,
+                display_name VARCHAR NOT NULL DEFAULT '',
+                certified_key VARCHAR NOT NULL UNIQUE,
+                created_at TIMESTAMPTZ DEFAULT NOW()
+            )
+        """))
+        await conn.execute(text("""
+            CREATE TABLE IF NOT EXISTS delete_notifications (
+                id SERIAL PRIMARY KEY,
+                user_id VARCHAR NOT NULL,
+                obstacle_id INTEGER NOT NULL,
+                reason VARCHAR,
+                is_read BOOLEAN NOT NULL DEFAULT FALSE,
+                created_at TIMESTAMPTZ DEFAULT NOW()
+            )
+        """))
+        await conn.execute(text("""
+            CREATE TABLE IF NOT EXISTS app_settings (
+                id SERIAL PRIMARY KEY,
+                key VARCHAR NOT NULL UNIQUE,
+                value VARCHAR NOT NULL
+            )
+        """))

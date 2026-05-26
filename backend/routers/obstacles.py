@@ -4,7 +4,7 @@ from fastapi import APIRouter, Depends, UploadFile, File, Form, HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, func, update
 from db.database import get_db
-from db.models import Obstacle, Vote
+from db.models import Obstacle, Vote, CertifiedUser, AppSetting
 from db.schemas import ObstacleOut, VoteRequest, VoteOut, TopContributor
 from services import storage, detector
 
@@ -31,6 +31,7 @@ def _to_out(row: Obstacle) -> ObstacleOut:
         aiLabel=row.ai_label,
         aiConfidence=row.ai_confidence,
         aiDetections=detections,
+        isCertified=bool(row.is_certified),
     )
 
 
@@ -48,18 +49,32 @@ async def create_obstacle(
     user_id: str      = Form(""),
     user_email: str   = Form(""),
     display_name: str = Form(""),
+    certified_key: str = Form(""),
     db: AsyncSession  = Depends(get_db),
 ):
     image_bytes = await photo.read()
 
-    # Firebase 업로드 + Detectron2 추론 병렬 실행 (속도 최적화)
+    # 인증 키 검증
+    is_certified = False
+    if certified_key:
+        cert = (await db.execute(
+            select(CertifiedUser).where(CertifiedUser.certified_key == certified_key)
+        )).scalar_one_or_none()
+        is_certified = cert is not None
+
+    # 자동 승인 설정 조회
+    setting = (await db.execute(
+        select(AppSetting).where(AppSetting.key == "auto_approve")
+    )).scalar_one_or_none()
+    auto_approve = setting is None or setting.value == "true"
+
     async def _safe_detect() -> list:
         if not detector.MODEL_READY:
             return []
         try:
             return await asyncio.to_thread(detector.detect, image_bytes)
         except Exception as e:
-            print(f"[Detectron2] 분석 실패: {e}")
+            print(f"[detector] 분석 실패: {e}")
             return []
 
     photo_url, detections = await asyncio.gather(
@@ -84,6 +99,8 @@ async def create_obstacle(
         ai_label      = ai_label,
         ai_confidence = ai_confidence,
         ai_detections = ai_detections_json,
+        is_certified  = is_certified,
+        is_approved   = auto_approve,
     )
     db.add(obs)
     await db.commit()

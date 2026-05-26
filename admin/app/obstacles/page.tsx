@@ -58,6 +58,8 @@ export default function ObstaclesPage() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [preview, setPreview] = useState<Obstacle | null>(null);
+  const [deleteTarget, setDeleteTarget] = useState<number | null>(null);
+  const [deleteReason, setDeleteReason] = useState("");
 
   async function load() {
     try {
@@ -79,10 +81,12 @@ export default function ObstaclesPage() {
     );
   }
 
-  async function handleDelete(id: number) {
-    if (!confirm("이 장애물을 삭제할까요?")) return;
-    await deleteObstacle(id);
-    setObstacles((prev) => prev.filter((o) => o.id !== id));
+  async function confirmDelete() {
+    if (deleteTarget === null) return;
+    await deleteObstacle(deleteTarget, deleteReason);
+    setObstacles((prev) => prev.filter((o) => o.id !== deleteTarget));
+    setDeleteTarget(null);
+    setDeleteReason("");
   }
 
   if (loading) {
@@ -236,7 +240,7 @@ export default function ObstaclesPage() {
                         {obs.isApproved ? "거부" : "승인"}
                       </Btn>
                       <Btn
-                        onClick={() => handleDelete(obs.id)}
+                        onClick={() => { setDeleteTarget(obs.id); setDeleteReason(""); }}
                         color="#e53935"
                         bg="#fde8e8"
                         hoverBg="#fbc7c7"
@@ -323,9 +327,50 @@ export default function ObstaclesPage() {
                 {preview.isApproved ? "승인 취소" : "승인하기"}
               </button>
               <button
-                onClick={() => { handleDelete(preview.id); setPreview(null); }}
+                onClick={() => { setDeleteTarget(preview.id); setDeleteReason(""); setPreview(null); }}
                 className="flex-1 py-2.5 rounded-xl text-sm font-bold"
                 style={{ background: "#fde8e8", color: "#e53935" }}
+              >
+                삭제하기
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* 삭제 사유 입력 모달 */}
+      {deleteTarget !== null && (
+        <div
+          className="fixed inset-0 flex items-center justify-center z-50"
+          style={{ background: "rgba(0,0,0,0.45)" }}
+          onClick={() => setDeleteTarget(null)}
+        >
+          <div
+            className="rounded-2xl p-6 w-full max-w-sm"
+            style={{ background: "#fff", boxShadow: "0 8px 32px rgba(0,0,0,0.18)" }}
+            onClick={(e) => e.stopPropagation()}
+          >
+            <h2 className="text-lg font-extrabold mb-1" style={{ color: "#1a1a1a" }}>장애물 삭제</h2>
+            <p className="text-sm mb-4" style={{ color: "#888" }}>삭제 사유를 입력하면 기여자에게 알림이 전송됩니다.</p>
+            <textarea
+              className="w-full rounded-xl border p-3 text-sm resize-none outline-none"
+              style={{ borderColor: "#e0e0e0", minHeight: 80, color: "#333" }}
+              placeholder="예: 중복 제보, 이미 해결된 장애물 등 (생략 가능)"
+              value={deleteReason}
+              onChange={(e) => setDeleteReason(e.target.value)}
+            />
+            <div className="flex gap-3 mt-4">
+              <button
+                className="flex-1 py-2.5 rounded-xl text-sm font-bold"
+                style={{ background: "#f5f5f5", color: "#555" }}
+                onClick={() => setDeleteTarget(null)}
+              >
+                취소
+              </button>
+              <button
+                className="flex-1 py-2.5 rounded-xl text-sm font-bold"
+                style={{ background: "#fde8e8", color: "#e53935" }}
+                onClick={confirmDelete}
               >
                 삭제하기
               </button>

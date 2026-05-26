@@ -25,6 +25,7 @@ export interface ApiObstacle {
   aiLabel: string | null;
   aiConfidence: number | null;
   aiDetections: { label: string; confidence: number; bbox: [number, number, number, number] }[] | null;
+  isCertified?: boolean;
 }
 
 // ── 장애물 ────────────────────────────────────────────────────────
@@ -41,7 +42,8 @@ export async function apiCreateObstacle(
   longitude: number,
   userId: string,
   userEmail: string,
-  displayName: string
+  displayName: string,
+  certifiedKey?: string
 ): Promise<ApiObstacle> {
   const form = new FormData();
   form.append('photo', { uri: photoUri, name: 'obstacle.jpg', type: 'image/jpeg' } as any);
@@ -50,6 +52,7 @@ export async function apiCreateObstacle(
   form.append('user_id', userId);
   form.append('user_email', userEmail);
   form.append('display_name', displayName);
+  if (certifiedKey) form.append('certified_key', certifiedKey);
 
   const res = await apiFetch(`${API_BASE_URL}/api/obstacles`, { method: 'POST', body: form }, 30000);
   if (!res.ok) throw new Error('장애물 등록 실패');
@@ -60,14 +63,16 @@ export async function apiVoteObstacle(
   obstacleId: number,
   userId: string,
   voteType: 'like' | 'dislike'
-): Promise<{ likes: number; dislikes: number; userVote: string | null }> {
+): Promise<{ likes: number; dislikes: number; userVote: 'like' | 'dislike' | null }> {
   const res = await apiFetch(`${API_BASE_URL}/api/obstacles/${obstacleId}/vote`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ user_id: userId, vote_type: voteType }),
   });
   if (!res.ok) throw new Error('투표 실패');
-  return res.json();
+  const data = await res.json();
+  const v = data.userVote;
+  return { ...data, userVote: v === 'like' || v === 'dislike' ? v : null };
 }
 
 export async function apiGetUserVote(
@@ -77,7 +82,8 @@ export async function apiGetUserVote(
   const res = await apiFetch(`${API_BASE_URL}/api/obstacles/${obstacleId}/vote/${userId}`);
   if (!res.ok) return null;
   const data = await res.json();
-  return data.userVote;
+  const v = data.userVote;
+  return v === 'like' || v === 'dislike' ? v : null;
 }
 
 export async function apiGetMyObstacles(userId: string): Promise<ApiObstacle[]> {
@@ -163,6 +169,30 @@ export async function apiDeleteComment(commentId: number, userId: string) {
   });
   if (!res.ok) throw new Error('댓글 삭제 실패');
   return res.json();
+}
+
+// ── 삭제 알림 ────────────────────────────────────────────────────────
+
+export interface DeleteNotification {
+  id: number;
+  userId: string;
+  obstacleId: number;
+  reason: string | null;
+  isRead: boolean;
+  createdAt: string;
+}
+
+export async function apiGetDeleteNotifications(userId: string): Promise<DeleteNotification[]> {
+  const res = await apiFetch(`${API_BASE_URL}/api/route/notifications/${userId}`);
+  if (!res.ok) throw new Error('알림 조회 실패');
+  return res.json();
+}
+
+export async function apiMarkNotificationRead(notifId: number): Promise<void> {
+  const res = await apiFetch(`${API_BASE_URL}/api/route/notifications/${notifId}/read`, {
+    method: 'PATCH',
+  });
+  if (!res.ok) throw new Error('알림 읽음 처리 실패');
 }
 
 // ── AI 분석 상태 확인 ─────────────────────────────────────────────

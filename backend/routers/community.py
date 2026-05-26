@@ -2,7 +2,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, func, update, delete
 from db.database import get_db
-from db.models import Post, PostLike, Comment
+from db.models import Post, PostLike, Comment, CertifiedUser
 from db.schemas import PostCreate, PostOut, CommentCreate, CommentOut
 
 router = APIRouter(prefix="/api/community", tags=["community"])
@@ -19,6 +19,7 @@ def _post_out(row: Post, comment_count: int = 0) -> PostOut:
         createdAt=row.created_at.isoformat(),
         likes=row.likes,
         commentCount=comment_count,
+        isCertified=bool(row.is_certified),
     )
 
 
@@ -31,7 +32,17 @@ def _comment_out(row: Comment) -> CommentOut:
         userEmail=row.user_email,
         displayName=row.display_name,
         createdAt=row.created_at.isoformat(),
+        isCertified=bool(row.is_certified),
     )
+
+
+async def _check_certified(certified_key: str, db: AsyncSession) -> bool:
+    if not certified_key:
+        return False
+    cert = (await db.execute(
+        select(CertifiedUser).where(CertifiedUser.certified_key == certified_key)
+    )).scalar_one_or_none()
+    return cert is not None
 
 
 # ── 게시글 ────────────────────────────────────────────────────────
@@ -54,10 +65,12 @@ async def get_posts(db: AsyncSession = Depends(get_db)):
 
 @router.post("/posts", response_model=PostOut)
 async def create_post(body: PostCreate, db: AsyncSession = Depends(get_db)):
+    is_certified = await _check_certified(body.certified_key, db)
     post = Post(
         title=body.title, content=body.content,
         user_id=body.user_id, user_email=body.user_email,
         display_name=body.display_name,
+        is_certified=is_certified,
     )
     db.add(post)
     await db.commit()
@@ -127,10 +140,12 @@ async def get_comments(post_id: int, db: AsyncSession = Depends(get_db)):
 async def add_comment(post_id: int, body: CommentCreate, db: AsyncSession = Depends(get_db)):
     if not await db.get(Post, post_id):
         raise HTTPException(404, "게시글을 찾을 수 없습니다")
+    is_certified = await _check_certified(body.certified_key, db)
     c = Comment(
         post_id=post_id, content=body.content,
         user_id=body.user_id, user_email=body.user_email,
         display_name=body.display_name,
+        is_certified=is_certified,
     )
     db.add(c)
     await db.commit()

@@ -1,10 +1,12 @@
 import json
+import secrets
 from pathlib import Path
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, func, delete, update
 from db.database import get_db
-from db.models import Obstacle, Vote, Post, PostLike, Comment
+from db.models import Obstacle, Vote, Post, PostLike, Comment, CertifiedUser, DeleteNotification, AppSetting
+from db.schemas import CertifiedUserCreate, CertifiedUserUpdate
 
 router = APIRouter(prefix="/admin", tags=["admin"])
 
@@ -76,12 +78,19 @@ async def toggle_approve(obstacle_id: int, db: AsyncSession = Depends(get_db)):
 
 
 @router.delete("/obstacles/{obstacle_id}")
-async def delete_obstacle(obstacle_id: int, db: AsyncSession = Depends(get_db)):
+async def delete_obstacle(obstacle_id: int, reason: str = "", db: AsyncSession = Depends(get_db)):
     obs = await db.get(Obstacle, obstacle_id)
     if not obs:
         raise HTTPException(404, "장애물을 찾을 수 없습니다")
 
-    # 로컬 파일 삭제
+    if obs.user_id:
+        notif = DeleteNotification(
+            user_id=obs.user_id,
+            obstacle_id=obstacle_id,
+            reason=reason or None,
+        )
+        db.add(notif)
+
     if obs.photo_url:
         filename = obs.photo_url.split("/uploads/")[-1]
         file_path = UPLOADS_DIR / filename
@@ -146,3 +155,78 @@ async def delete_comment(comment_id: int, db: AsyncSession = Depends(get_db)):
     await db.delete(c)
     await db.commit()
     return {"ok": True}
+
+
+# ── 인증 사용자 관리 ────────────────────────────────────────────────
+
+@router.get("/certified")
+async def list_certified(db: AsyncSession = Depends(get_db)):
+    rows = (await db.execute(
+        select(CertifiedUser).order_by(CertifiedUser.created_at.desc())
+    )).scalars().all()
+    return [
+        {
+            "id": r.id,
+            "userId": r.user_id,
+            "displayName": r.display_name,
+            "certifiedKey": r.certified_key,
+            "createdAt": r.created_at.isoformat() if r.created_at else None,
+        }
+        for r in rows
+    ]
+
+
+@router.post("/certified")
+async def create_certified(body: CertifiedUserCreate, db: AsyncSession = Depends(get_db)):
+    key = body.certified_key or secrets.token_urlsafe(16)
+    cert = CertifiedUser(user_id=body.user_id, display_name=body.display_name, certified_key=key)
+    db.add(cert)
+    await db.commit()
+    await db.refresh(cert)
+    return {"id": cert.id, "userId": cert.user_id, "certifiedKey": cert.certified_key}
+
+
+@router.patch("/certified/{cert_id}")
+async def update_certified(cert_id: int, body: CertifiedUserUpdate, db: AsyncSession = Depends(get_db)):
+    cert = await db.get(CertifiedUser, cert_id)
+    if not cert:
+        raise HTTPException(404, "인증 사용자를 찾을 수 없습니다")
+    if body.display_name is not None:
+        cert.display_name = body.display_name
+    if body.certified_key is not None:
+        cert.certified_key = body.certified_key
+    await db.commit()
+    return {"ok": True}
+
+
+@router.delete("/certified/{cert_id}")
+async def delete_certified(cert_id: int, db: AsyncSession = Depends(get_db)):
+    cert = await db.get(CertifiedUser, cert_id)
+    if not cert:
+        raise HTTPException(404, "인증 사용자를 찾을 수 없습니다")
+    await db.delete(cert)
+    await db.commit()
+    return {"ok": True}
+
+
+# ── 자동 승인 설정 ────────────────────────────────────────────────
+
+@router.get("/settings/auto-approve")
+async def get_auto_approve(db: AsyncSession = Depends(get_db)):
+    setting = (await db.execute(
+        select(AppSetting).where(AppSetting.key == "auto_approve")
+    )).scalar_one_or_none()
+    return {"autoApprove": setting is None or setting.value == "true"}
+
+
+@router.patch("/settings/auto-approve")
+async def set_auto_approve(enabled: bool, db: AsyncSession = Depends(get_db)):
+    setting = (await db.execute(
+        select(AppSetting).where(AppSetting.key == "auto_approve")
+    )).scalar_one_or_none()
+    if setting:
+        setting.value = "true" if enabled else "false"
+    else:
+        db.add(AppSetting(key="auto_approve", value="true" if enabled else "false"))
+    await db.commit()
+    return {"autoApprove": enabled}

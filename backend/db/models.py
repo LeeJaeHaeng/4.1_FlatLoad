@@ -5,7 +5,7 @@ class Obstacle(Base):
     __tablename__ = "obstacles"
 
     id          = Column(Integer, primary_key=True, autoincrement=True)
-    photo_url   = Column(String, nullable=True)         # Firebase Storage URL (없으면 빈 문자열)
+    photo_url   = Column(String, nullable=True)
     latitude    = Column(Float, nullable=False)
     longitude   = Column(Float, nullable=False)
     created_at  = Column(DateTime(timezone=True), server_default=func.now())
@@ -16,8 +16,9 @@ class Obstacle(Base):
     dislikes    = Column(Integer, nullable=False, default=0)
     ai_label      = Column(String, nullable=True)
     ai_confidence = Column(Float, nullable=True)
-    ai_detections = Column(Text, nullable=True)   # JSON: [{label,confidence,bbox}]
+    ai_detections = Column(Text, nullable=True)
     is_approved   = Column(Boolean, nullable=False, default=True)
+    is_certified  = Column(Boolean, nullable=False, default=False)
 
 
 class Vote(Base):
@@ -41,6 +42,7 @@ class Post(Base):
     display_name = Column(String, nullable=False, default="")
     created_at   = Column(DateTime(timezone=True), server_default=func.now())
     likes        = Column(Integer, nullable=False, default=0)
+    is_certified = Column(Boolean, nullable=False, default=False)
 
 
 class PostLike(Base):
@@ -62,3 +64,33 @@ class Comment(Base):
     user_email   = Column(String, nullable=False, default="")
     display_name = Column(String, nullable=False, default="")
     created_at   = Column(DateTime(timezone=True), server_default=func.now())
+    is_certified = Column(Boolean, nullable=False, default=False)
+
+
+class CertifiedUser(Base):
+    __tablename__ = "certified_users"
+
+    id            = Column(Integer, primary_key=True, autoincrement=True)
+    user_id       = Column(String, nullable=False, unique=True)
+    display_name  = Column(String, nullable=False, default="")
+    certified_key = Column(String, nullable=False, unique=True)
+    created_at    = Column(DateTime(timezone=True), server_default=func.now())
+
+
+class DeleteNotification(Base):
+    __tablename__ = "delete_notifications"
+
+    id          = Column(Integer, primary_key=True, autoincrement=True)
+    user_id     = Column(String, nullable=False)
+    obstacle_id = Column(Integer, nullable=False)
+    reason      = Column(String, nullable=True)
+    is_read     = Column(Boolean, nullable=False, default=False)
+    created_at  = Column(DateTime(timezone=True), server_default=func.now())
+
+
+class AppSetting(Base):
+    __tablename__ = "app_settings"
+
+    id    = Column(Integer, primary_key=True, autoincrement=True)
+    key   = Column(String, nullable=False, unique=True)
+    value = Column(String, nullable=False)

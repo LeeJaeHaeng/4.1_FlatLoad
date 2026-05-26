@@ -1,9 +1,21 @@
-import React from 'react';
-import { NavigationContainer } from '@react-navigation/native';
+import React, { useState } from 'react';
+import {
+  NavigationContainer,
+} from '@react-navigation/native';
 import { createBottomTabNavigator } from '@react-navigation/bottom-tabs';
-import { View, Text, StyleSheet } from 'react-native';
+import {
+  View,
+  Text,
+  StyleSheet,
+  Modal,
+  TextInput,
+  TouchableOpacity,
+  KeyboardAvoidingView,
+  Platform,
+  ActivityIndicator,
+} from 'react-native';
 import { MaterialIcons } from '@expo/vector-icons';
-import { AuthProvider } from './context/AuthContext';
+import { AuthProvider, useAuth } from './context/AuthContext';
 
 import MapScreen from './screens/MapScreen';
 import CommunityScreen from './screens/CommunityScreen';
@@ -29,7 +41,6 @@ function TabIcon({
 }) {
   return (
     <View style={tabStyles.wrapper}>
-      {/* 상단 인디케이터 */}
       {focused && <View style={tabStyles.indicator} />}
       <MaterialIcons
         name={name}
@@ -66,9 +77,170 @@ const tabStyles = StyleSheet.create({
   },
 });
 
-export default function App() {
+function NicknameModal({ onRegister }: { onRegister: (name: string) => Promise<void> }) {
+  const [nickname, setNickname] = useState('');
+  const [submitting, setSubmitting] = useState(false);
+
+  const handleSubmit = async () => {
+    const trimmed = nickname.trim();
+    if (!trimmed) return;
+    setSubmitting(true);
+    await onRegister(trimmed);
+    setSubmitting(false);
+  };
+
   return (
-    <AuthProvider>
+    <Modal visible animationType="fade" statusBarTranslucent>
+      <KeyboardAvoidingView
+        style={nicknameStyles.container}
+        behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+      >
+        <View style={nicknameStyles.card}>
+          <Text style={nicknameStyles.appTitle}>FlatRoad</Text>
+          <Text style={nicknameStyles.appSubtitle}>보행 약자를 위한 장애물 지도</Text>
+
+          <View style={nicknameStyles.divider} />
+
+          <Text style={nicknameStyles.promptTitle}>닉네임을 입력해주세요</Text>
+          <Text style={nicknameStyles.promptDesc}>
+            서비스 이용 시 표시되는 이름입니다 (최대 12자)
+          </Text>
+
+          <TextInput
+            style={nicknameStyles.input}
+            placeholder="닉네임 입력"
+            placeholderTextColor="#BBBBBB"
+            value={nickname}
+            onChangeText={setNickname}
+            maxLength={12}
+            returnKeyType="done"
+            onSubmitEditing={handleSubmit}
+            autoFocus
+          />
+
+          <TouchableOpacity
+            style={[
+              nicknameStyles.button,
+              !nickname.trim() && nicknameStyles.buttonDisabled,
+            ]}
+            onPress={handleSubmit}
+            disabled={!nickname.trim() || submitting}
+          >
+            {submitting ? (
+              <ActivityIndicator color="#fff" />
+            ) : (
+              <Text style={nicknameStyles.buttonText}>시작하기</Text>
+            )}
+          </TouchableOpacity>
+
+          {/* TODO: 정식 버전에서 Google 로그인으로 교체 예정 */}
+          <Text style={nicknameStyles.futureNote}>
+            정식 버전에서는 Google 로그인이 지원됩니다
+          </Text>
+        </View>
+      </KeyboardAvoidingView>
+    </Modal>
+  );
+}
+
+const nicknameStyles = StyleSheet.create({
+  container: {
+    flex: 1,
+    backgroundColor: '#F8F8F8',
+    justifyContent: 'center',
+    alignItems: 'center',
+    padding: 24,
+  },
+  card: {
+    width: '100%',
+    backgroundColor: '#fff',
+    borderRadius: 16,
+    padding: 28,
+    alignItems: 'center',
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.1,
+    shadowRadius: 12,
+    elevation: 6,
+  },
+  appTitle: {
+    fontSize: 28,
+    fontWeight: '700',
+    color: '#F5A623',
+    letterSpacing: 1,
+  },
+  appSubtitle: {
+    fontSize: 13,
+    color: '#888',
+    marginTop: 4,
+  },
+  divider: {
+    width: '100%',
+    height: 1,
+    backgroundColor: '#F0F0F0',
+    marginVertical: 20,
+  },
+  promptTitle: {
+    fontSize: 18,
+    fontWeight: '600',
+    color: '#222',
+    marginBottom: 6,
+  },
+  promptDesc: {
+    fontSize: 13,
+    color: '#888',
+    marginBottom: 20,
+    textAlign: 'center',
+  },
+  input: {
+    width: '100%',
+    height: 48,
+    borderWidth: 1.5,
+    borderColor: '#E0E0E0',
+    borderRadius: 10,
+    paddingHorizontal: 14,
+    fontSize: 16,
+    color: '#222',
+    marginBottom: 16,
+    backgroundColor: '#FAFAFA',
+  },
+  button: {
+    width: '100%',
+    height: 48,
+    backgroundColor: '#F5A623',
+    borderRadius: 10,
+    justifyContent: 'center',
+    alignItems: 'center',
+    marginBottom: 16,
+  },
+  buttonDisabled: {
+    backgroundColor: '#DDDDDD',
+  },
+  buttonText: {
+    color: '#fff',
+    fontSize: 16,
+    fontWeight: '600',
+  },
+  futureNote: {
+    fontSize: 12,
+    color: '#BBBBBB',
+  },
+});
+
+function AppContent() {
+  const { user, loading, registerUser } = useAuth();
+
+  if (loading) {
+    return (
+      <View style={{ flex: 1, justifyContent: 'center', alignItems: 'center' }}>
+        <ActivityIndicator size="large" color="#F5A623" />
+      </View>
+    );
+  }
+
+  return (
+    <>
+      {!user && <NicknameModal onRegister={registerUser} />}
       <NavigationContainer>
         <Tab.Navigator
           screenOptions={{
@@ -135,6 +307,14 @@ export default function App() {
           />
         </Tab.Navigator>
       </NavigationContainer>
+    </>
+  );
+}
+
+export default function App() {
+  return (
+    <AuthProvider>
+      <AppContent />
     </AuthProvider>
   );
 }
