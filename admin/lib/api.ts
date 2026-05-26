@@ -122,3 +122,20 @@ export async function updateCertifiedUser(
 export async function deleteCertifiedUser(id: number): Promise<void> {
   await fetch(`${API}/admin/certified/${id}`, { method: "DELETE" });
 }
+
+// ── 앱 설정 ─────────────────────────────────────────────────────
+
+export async function getSettings(): Promise<Record<string, string>> {
+  const res = await fetch(`${API}/admin/settings`, { cache: "no-store" });
+  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  return res.json();
+}
+
+export async function updateSetting(key: string, value: boolean): Promise<void> {
+  const res = await fetch(`${API}/admin/settings/${key}`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ value: value ? "true" : "false" }),
+  });
+  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+}

@@ -1,4 +1,5 @@
-import { getStats } from "@/lib/api";
+import { getStats, getSettings } from "@/lib/api";
+import AutoApproveToggle from "@/components/AutoApproveToggle";
 
 interface StatCardProps {
   title: string;
@@ -51,6 +52,9 @@ export default async function DashboardPage() {
     );
   }
 
+  const settings = await getSettings().catch(() => ({} as Record<string, string>));
+  const autoApprove = settings["auto_approve_images"] !== "false";
+
   return (
     <div>
       {/* 헤더 */}
@@ -100,9 +104,16 @@ export default async function DashboardPage() {
         />
       </div>
 
+      {/* 설정 섹션 */}
+      <div className="mt-8 mb-2">
+        <h2 className="text-base font-bold" style={{ color: "#1a1a1a" }}>앱 설정</h2>
+        <p className="text-xs mt-0.5" style={{ color: "#999" }}>앱 동작 방식을 제어합니다.</p>
+      </div>
+      <AutoApproveToggle initialValue={autoApprove} />
+
       {/* 안내 카드 */}
       <div
-        className="mt-6 rounded-2xl p-5 flex items-center gap-4"
+        className="mt-4 rounded-2xl p-5 flex items-center gap-4"
         style={{
           background: "#fff",
           boxShadow: "0 1px 6px rgba(0,0,0,0.07)",

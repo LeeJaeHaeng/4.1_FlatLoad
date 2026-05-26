@@ -6,7 +6,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, func, delete, update
 from db.database import get_db
-from db.models import Obstacle, Vote, Post, PostLike, Comment, CertifiedUser, DeleteNotification
+from db.models import Obstacle, Vote, Post, PostLike, Comment, CertifiedUser, DeleteNotification, AppSetting
 from db.schemas import CertifiedUserCreate, CertifiedUserUpdate
 
 router = APIRouter(prefix="/admin", tags=["admin"])
@@ -224,3 +224,28 @@ async def delete_certified_user(user_id: int, db: AsyncSession = Depends(get_db)
     await db.delete(user)
     await db.commit()
     return {"ok": True}
+
+
+# ── 앱 설정 ────────────────────────────────────────────────────────
+
+@router.get("/settings")
+async def get_settings(db: AsyncSession = Depends(get_db)):
+    rows = (await db.execute(select(AppSetting))).scalars().all()
+    return {r.key: r.value for r in rows}
+
+
+@router.patch("/settings/{key}")
+async def update_setting(key: str, body: dict, db: AsyncSession = Depends(get_db)):
+    ALLOWED_KEYS = {"auto_approve_images"}
+    if key not in ALLOWED_KEYS:
+        raise HTTPException(400, "알 수 없는 설정 키입니다")
+    value = str(body.get("value", "")).lower()
+    if value not in ("true", "false"):
+        raise HTTPException(400, "값은 'true' 또는 'false'여야 합니다")
+    setting = await db.get(AppSetting, key)
+    if setting is None:
+        db.add(AppSetting(key=key, value=value))
+    else:
+        setting.value = value
+    await db.commit()
+    return {key: value}

@@ -41,3 +41,9 @@ async def create_tables():
         await conn.execute(text(
             "ALTER TABLE comments ADD COLUMN IF NOT EXISTS is_certified BOOLEAN NOT NULL DEFAULT FALSE"
         ))
+        await conn.execute(text(
+            "CREATE TABLE IF NOT EXISTS app_settings (key VARCHAR PRIMARY KEY, value VARCHAR NOT NULL)"
+        ))
+        await conn.execute(text(
+            "INSERT INTO app_settings (key, value) VALUES ('auto_approve_images', 'true') ON CONFLICT (key) DO NOTHING"
+        ))

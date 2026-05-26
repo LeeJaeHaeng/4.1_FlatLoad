@@ -87,3 +87,10 @@ class Comment(Base):
     display_name = Column(String, nullable=False, default="")
     created_at   = Column(DateTime(timezone=True), server_default=func.now())
     is_certified = Column(Boolean, nullable=False, default=False)
+
+
+class AppSetting(Base):
+    __tablename__ = "app_settings"
+
+    key   = Column(String, primary_key=True)
+    value = Column(String, nullable=False)

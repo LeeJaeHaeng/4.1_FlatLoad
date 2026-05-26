@@ -5,7 +5,7 @@ from fastapi import APIRouter, Depends, UploadFile, File, Form, HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, func, update
 from db.database import get_db
-from db.models import Obstacle, Vote, CertifiedUser, DeleteNotification
+from db.models import Obstacle, Vote, CertifiedUser, DeleteNotification, AppSetting
 from db.schemas import ObstacleOut, VoteRequest, VoteOut, TopContributor
 from services import storage, detector
 
@@ -93,6 +93,11 @@ async def create_obstacle(
         if cert:
             is_certified = True
 
+    auto_approve_setting = (await db.execute(
+        select(AppSetting).where(AppSetting.key == "auto_approve_images")
+    )).scalar_one_or_none()
+    is_approved = (auto_approve_setting is None or auto_approve_setting.value == "true")
+
     obs = Obstacle(
         photo_url     = photo_url,
         latitude      = latitude,
@@ -104,6 +109,7 @@ async def create_obstacle(
         ai_confidence = ai_confidence,
         ai_detections = ai_detections_json,
         is_certified  = is_certified,
+        is_approved   = is_approved,
     )
     db.add(obs)
     await db.commit()
