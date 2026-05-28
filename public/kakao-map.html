@@ -1,0 +1,333 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    html, body { width: 100%; height: 100%; overflow: hidden; background: #edf1f5; }
+    #map { width: 100%; height: 100%; background: #edf1f5; transition: filter 220ms ease-out; }
+    body.nav-mode #map { filter: saturate(1.08) contrast(1.05) brightness(0.92); }
+  </style>
+</head>
+<body>
+  <div id="map"></div>
+  <script>
+    (function() {
+      var params = new URLSearchParams(window.location.search);
+      var appkey = params.get('appkey') || '';
+      var initialLat = parseFloat(params.get('lat') || '37.5665');
+      var initialLng = parseFloat(params.get('lng') || '126.9780');
+      if (!Number.isFinite(initialLat)) initialLat = 37.5665;
+      if (!Number.isFinite(initialLng)) initialLng = 126.9780;
+
+      function postToApp(payload) {
+        var message = typeof payload === 'string' ? payload : JSON.stringify(payload);
+        if (window.parent && window.parent !== window) {
+          window.parent.postMessage(message, '*');
+        }
+      }
+
+      function reportMapError(message) {
+        postToApp({ type: 'mapError', message: message });
+      }
+
+      window.onerror = function(message, source, lineno, colno, error) {
+        reportMapError(error && error.message ? error.message : String(message || '지도 스크립트 오류'));
+        return true;
+      };
+
+      if (!appkey) {
+        reportMapError('EXPO_PUBLIC_KAKAO_JS_KEY가 비어 있습니다.');
+        return;
+      }
+
+      var sdk = document.createElement('script');
+      sdk.src = 'https://dapi.kakao.com/v2/maps/sdk.js?appkey=' + encodeURIComponent(appkey) + '&autoload=false';
+      sdk.onerror = function() { reportMapError('Kakao 지도 SDK를 불러오지 못했습니다.'); };
+      sdk.onload = initializeMap;
+      document.head.appendChild(sdk);
+
+      function initializeMap() {
+        if (!window.kakao || !window.kakao.maps) {
+          reportMapError('Kakao 지도 SDK가 준비되지 않았습니다.');
+          return;
+        }
+
+        kakao.maps.load(function() {
+          try {
+            var map = new kakao.maps.Map(document.getElementById('map'), {
+              center: new kakao.maps.LatLng(initialLat, initialLng),
+              level: 3
+            });
+            var accuracyCircle = null;
+            var currentHeading = 0;
+            var hasHeading = false;
+            var userOverlay = null;
+            var obstacleOverlays = {};
+            var obstacleData = {};
+            var routePolyline = null;
+            var destOverlay = null;
+            var facilityOverlays = [];
+            var maneuverOverlays = [];
+            var navMode = false;
+            var readySent = false;
+            var readyTimer = setTimeout(function() {
+              if (!readySent) reportMapError('지도 타일을 불러오지 못했습니다. 네트워크와 Kakao JavaScript 키 도메인 설정을 확인하세요.');
+            }, 12000);
+
+            function reportMapReady() {
+              if (readySent) return;
+              readySent = true;
+              clearTimeout(readyTimer);
+              postToApp({ type: 'mapReady' });
+            }
+
+            function buildLocationSVG(heading, showHeading) {
+              var svg = '<svg width="80" height="80" viewBox="0 0 80 80" xmlns="http://www.w3.org/2000/svg">';
+              if (showHeading) {
+                svg += '<g transform="rotate(' + heading + ', 40, 40)">'
+                  + '<path d="M40,40 L31,14 A 27 27 0 0 1 49,14 Z" fill="rgba(66,133,244,0.55)"/>'
+                  + '</g>';
+              }
+              svg += '<circle cx="40" cy="40" r="10" fill="white"/>';
+              svg += '<circle cx="40" cy="40" r="7" fill="#4285F4"/>';
+              svg += '</svg>';
+              return svg;
+            }
+
+            userOverlay = new kakao.maps.CustomOverlay({
+              position: new kakao.maps.LatLng(initialLat, initialLng),
+              content: '<div style="width:80px;height:80px;">' + buildLocationSVG(0, false) + '</div>',
+              xAnchor: 0.5,
+              yAnchor: 0.5,
+              zIndex: 10
+            });
+            userOverlay.setMap(map);
+
+            kakao.maps.event.addListener(map, 'zoom_changed', function() {
+              if (navMode && userOverlay) map.setCenter(userOverlay.getPosition());
+            });
+
+            function updateLocation(lat, lng, accuracy) {
+              var pos = new kakao.maps.LatLng(lat, lng);
+              if (userOverlay) {
+                userOverlay.setPosition(pos);
+                userOverlay.setContent('<div style="width:80px;height:80px;">' + buildLocationSVG(currentHeading, hasHeading) + '</div>');
+              }
+              if (navMode) map.setCenter(pos);
+              if (accuracyCircle) accuracyCircle.setMap(null);
+              if (accuracy && accuracy < 500) {
+                accuracyCircle = new kakao.maps.Circle({
+                  center: pos,
+                  radius: accuracy,
+                  strokeWeight: 1,
+                  strokeColor: '#4285F4',
+                  strokeOpacity: 0.5,
+                  fillColor: '#4285F4',
+                  fillOpacity: 0.08
+                });
+                accuracyCircle.setMap(map);
+              }
+            }
+
+            function updateHeading(heading) {
+              currentHeading = heading;
+              hasHeading = true;
+              if (navMode && userOverlay) map.setCenter(userOverlay.getPosition());
+              if (userOverlay) {
+                userOverlay.setContent('<div style="width:80px;height:80px;">' + buildLocationSVG(heading, true) + '</div>');
+              }
+            }
+
+            function flyToLocation(lat, lng) {
+              map.setCenter(new kakao.maps.LatLng(lat, lng));
+            }
+
+            function setNavigationMode(active) {
+              navMode = !!active;
+              document.body.classList.toggle('nav-mode', navMode);
+              if (navMode) {
+                map.setLevel(2);
+                if (userOverlay) map.setCenter(userOverlay.getPosition());
+              } else {
+                map.setLevel(3);
+              }
+            }
+
+            function onObstacleClick(id) {
+              var d = obstacleData[id];
+              if (!d) return;
+              postToApp({
+                type: 'obstacleClick',
+                id: id,
+                lat: d.lat,
+                lng: d.lng,
+                photoUri: d.photoUri,
+                createdAt: d.createdAt
+              });
+            }
+
+            function addObstacleMarker(id, lat, lng, photoUri, createdAt, count) {
+              if (obstacleOverlays[id]) obstacleOverlays[id].setMap(null);
+              obstacleData[id] = { lat: lat, lng: lng, photoUri: photoUri, createdAt: createdAt };
+              var photoContent = photoUri
+                ? '<img src="' + photoUri + '" style="width:100%;height:100%;object-fit:cover;"/>'
+                : '<div style="width:100%;height:100%;display:flex;align-items:center;justify-content:center;font-size:20px;">!</div>';
+              var countBadge = (count > 1)
+                ? '<div style="position:absolute;top:-4px;right:-2px;background:#e53935;color:white;border-radius:10px;min-width:18px;height:18px;display:flex;align-items:center;justify-content:center;font-size:10px;font-weight:800;border:2px solid white;padding:0 2px;">x' + count + '</div>'
+                : '';
+              var iconHtml = '<div style="position:relative;width:50px;height:60px;cursor:pointer;" onclick="onObstacleClick(' + id + ');">'
+                + '<div style="position:absolute;top:0;left:3px;width:44px;height:44px;border-radius:50%;border:3px solid #FF5722;overflow:hidden;background:#eee;">'
+                + photoContent
+                + '</div>'
+                + countBadge
+                + '<div style="position:absolute;bottom:0;left:50%;transform:translateX(-50%);width:0;height:0;border-left:8px solid transparent;border-right:8px solid transparent;border-top:14px solid #FF5722;"></div>'
+                + '</div>';
+              var overlay = new kakao.maps.CustomOverlay({
+                position: new kakao.maps.LatLng(lat, lng),
+                content: iconHtml,
+                xAnchor: 0.5,
+                yAnchor: 1,
+                zIndex: 5
+              });
+              overlay.setMap(map);
+              obstacleOverlays[id] = overlay;
+            }
+
+            function clearObstacleMarkers() {
+              Object.values(obstacleOverlays).forEach(function(o) { o.setMap(null); });
+              obstacleOverlays = {};
+              obstacleData = {};
+            }
+
+            function addFacilityMarker(lat, lng, type) {
+              var cfg = {
+                elevator:{ e:'E', c:'#2196F3' },
+                ramp:{ e:'W', c:'#4CAF50' },
+                toilet:{ e:'T', c:'#9C27B0' },
+                charger:{ e:'C', c:'#00A693' },
+                slope:{ e:'!', c:'#FF5722' }
+              }[type] || { e:'P', c:'#607D8B' };
+              var content = '<div style="width:34px;height:34px;border-radius:50%;background:'+cfg.c+';color:white;display:flex;align-items:center;justify-content:center;font-size:15px;font-weight:800;border:2.5px solid white;box-shadow:0 2px 6px rgba(0,0,0,0.35);">'+cfg.e+'</div>';
+              var overlay = new kakao.maps.CustomOverlay({
+                position: new kakao.maps.LatLng(lat, lng),
+                content: content,
+                xAnchor: 0.5,
+                yAnchor: 0.5
+              });
+              overlay.setMap(map);
+              facilityOverlays.push({ overlay: overlay, type: type });
+            }
+
+            function clearFacilityMarkers(type) {
+              if (!type) {
+                facilityOverlays.forEach(function(f) { f.overlay.setMap(null); });
+                facilityOverlays = [];
+              } else {
+                facilityOverlays = facilityOverlays.filter(function(f) {
+                  if (f.type === type) { f.overlay.setMap(null); return false; }
+                  return true;
+                });
+              }
+            }
+
+            function addManeuverMarker(lat, lng, arrow, distStr) {
+              var content = '<div style="background:#1a1a1a;color:white;border-radius:8px;padding:3px 8px;font-size:12px;font-weight:700;white-space:nowrap;box-shadow:0 2px 5px rgba(0,0,0,0.4);">' + arrow + ' ' + distStr + '</div>';
+              var overlay = new kakao.maps.CustomOverlay({
+                position: new kakao.maps.LatLng(lat, lng),
+                content: content
+              });
+              overlay.setMap(map);
+              maneuverOverlays.push(overlay);
+            }
+
+            function clearManeuverMarkers() {
+              maneuverOverlays.forEach(function(o) { o.setMap(null); });
+              maneuverOverlays = [];
+            }
+
+            function drawRoute(coords, color) {
+              if (routePolyline) routePolyline.setMap(null);
+              var path = coords.map(function(c) { return new kakao.maps.LatLng(c[1], c[0]); });
+              if (path.length < 2) return;
+              routePolyline = new kakao.maps.Polyline({
+                path: path,
+                strokeWeight: 5,
+                strokeColor: color || '#4285F4',
+                strokeOpacity: 0.85,
+                strokeStyle: 'solid'
+              });
+              routePolyline.setMap(map);
+              var bounds = new kakao.maps.LatLngBounds();
+              path.forEach(function(point) { bounds.extend(point); });
+              map.setBounds(bounds, 80, 80, 80, 80);
+            }
+
+            function clearRoute() {
+              if (routePolyline) { routePolyline.setMap(null); routePolyline = null; }
+              if (destOverlay) { destOverlay.setMap(null); destOverlay = null; }
+            }
+
+            function addDestMarker(lat, lng) {
+              if (destOverlay) destOverlay.setMap(null);
+              destOverlay = new kakao.maps.CustomOverlay({
+                position: new kakao.maps.LatLng(lat, lng),
+                content: '<div style="width:18px;height:18px;border-radius:50%;background:#FF5722;border:3px solid white;box-shadow:0 2px 5px rgba(0,0,0,0.4);"></div>',
+                xAnchor: 0.5,
+                yAnchor: 0.5
+              });
+              destOverlay.setMap(map);
+            }
+
+            function handleMessage(data) {
+              try {
+                if (typeof data !== 'string') data = JSON.stringify(data);
+                var msg = JSON.parse(data);
+                if (msg.type === 'updateLocation') {
+                  updateLocation(msg.lat, msg.lng, msg.accuracy);
+                } else if (msg.type === 'updateHeading') {
+                  updateHeading(msg.heading);
+                } else if (msg.type === 'flyTo') {
+                  flyToLocation(msg.lat, msg.lng);
+                } else if (msg.type === 'setNavigationMode') {
+                  setNavigationMode(msg.active);
+                } else if (msg.type === 'setObstacles') {
+                  clearObstacleMarkers();
+                  msg.obstacles.forEach(function(o) {
+                    addObstacleMarker(o.id, o.latitude, o.longitude, o.photoUri, o.createdAt, o.count || 1);
+                  });
+                } else if (msg.type === 'drawRoute') {
+                  drawRoute(msg.coords, msg.color);
+                } else if (msg.type === 'clearRoute') {
+                  clearRoute();
+                  clearManeuverMarkers();
+                  clearFacilityMarkers('slope');
+                } else if (msg.type === 'addDestMarker') {
+                  addDestMarker(msg.lat, msg.lng);
+                } else if (msg.type === 'addFacilityMarker') {
+                  addFacilityMarker(msg.lat, msg.lng, msg.facilityType);
+                } else if (msg.type === 'clearFacilityMarkers') {
+                  clearFacilityMarkers(msg.facilityType || null);
+                } else if (msg.type === 'addManeuverMarker') {
+                  addManeuverMarker(msg.lat, msg.lng, msg.arrow, msg.distStr);
+                } else if (msg.type === 'clearManeuverMarkers') {
+                  clearManeuverMarkers();
+                }
+              } catch(e) {}
+            }
+
+            document.addEventListener('message', function(e) { handleMessage(e.data); });
+            window.addEventListener('message', function(e) { handleMessage(e.data); });
+
+            window.onObstacleClick = onObstacleClick;
+            kakao.maps.event.addListener(map, 'tilesloaded', reportMapReady);
+          } catch (e) {
+            reportMapError(e && e.message ? e.message : '지도 초기화에 실패했습니다.');
+          }
+        });
+      }
+    })();
+  </script>
+</body>
+</html>

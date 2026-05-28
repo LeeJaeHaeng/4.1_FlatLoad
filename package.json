@@ -4,7 +4,7 @@
   "main": "index.ts",
   "scripts": {
     "start": "expo start",
-    "build:web": "expo export --platform web",
+    "build:web": "expo export --platform web && node scripts/copy-web-static.js",
     "android": "expo run:android",
     "ios": "expo run:ios",
     "test:unit": "tsc scripts/test-detection-overlay.ts utils/detectionOverlay.ts --module commonjs --target ES2020 --outDir .tmp-tests --skipLibCheck && node .tmp-tests/scripts/test-detection-overlay.js"

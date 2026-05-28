@@ -1296,6 +1296,7 @@ export default function MapScreen({ navigation }: any) {
     mapHtmlKeyRef.current = mapReloadKey;
   }
   const mapHtml = mapHtmlRef.current;
+  const mapUrl = `/kakao-map.html?appkey=${encodeURIComponent(KAKAO_JS_KEY)}&lat=${encodeURIComponent(String(initLat))}&lng=${encodeURIComponent(String(initLng))}&v=${mapReloadKey}`;
   const currentStep = maneuvers[currentManeuverIdx];
   const nextStep = maneuvers[currentManeuverIdx + 1];
   const currentInstruction = currentStep?.instruction || getManeuverLabel(currentStep?.type ?? 1);
@@ -1329,7 +1330,7 @@ export default function MapScreen({ navigation }: any) {
         React.createElement('iframe' as any, {
           key: mapReloadKey,
           ref: webFrameRef,
-          srcDoc: mapHtml,
+          src: mapUrl,
           title: 'Kakao map',
           style: {
             position: 'absolute',
