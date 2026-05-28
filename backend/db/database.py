@@ -7,9 +7,22 @@ import os
 
 load_dotenv()
 
-DATABASE_URL = os.getenv("DATABASE_URL", "postgresql+asyncpg://postgres:postgres@localhost:5432/flatroad")
+def _normalize_database_url(url: str) -> str:
+    if url.startswith("postgresql+asyncpg://") or url.startswith("sqlite+aiosqlite:"):
+        return url
+    if url.startswith("postgresql://"):
+        return url.replace("postgresql://", "postgresql+asyncpg://", 1)
+    if url.startswith("postgres://"):
+        return url.replace("postgres://", "postgresql+asyncpg://", 1)
+    return url
+
+
+DATABASE_URL = _normalize_database_url(
+    os.getenv("DATABASE_URL", "postgresql+asyncpg://postgres:postgres@localhost:5432/flatroad")
+)
 IS_SQLITE = DATABASE_URL.startswith("sqlite+aiosqlite:")
-USE_NULL_POOL = os.getenv("DB_USE_NULL_POOL", "").lower() in {"1", "true", "yes"} or "pooler.supabase.com" in DATABASE_URL
+IS_SUPABASE = "supabase.co" in DATABASE_URL
+USE_NULL_POOL = os.getenv("DB_USE_NULL_POOL", "").lower() in {"1", "true", "yes"} or IS_SUPABASE
 DISABLE_STATEMENT_CACHE = (
     os.getenv("DB_DISABLE_STATEMENT_CACHE", "").lower() in {"1", "true", "yes"}
     or ":6543" in DATABASE_URL
@@ -20,8 +33,13 @@ if IS_SQLITE:
     engine = create_async_engine(DATABASE_URL, echo=False)
 else:
     engine_options = {"echo": False}
+    connect_args = {}
+    if IS_SUPABASE:
+        connect_args["ssl"] = True
     if DISABLE_STATEMENT_CACHE:
-        engine_options["connect_args"] = {"statement_cache_size": 0}
+        connect_args["statement_cache_size"] = 0
+    if connect_args:
+        engine_options["connect_args"] = connect_args
     if USE_NULL_POOL:
         engine_options["poolclass"] = NullPool
     else:
