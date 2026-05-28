@@ -2,14 +2,13 @@ from fastapi import FastAPI, Depends
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from contextlib import asynccontextmanager
-from pathlib import Path
 from datetime import datetime, timezone
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 from db.database import create_tables, get_db
 from db.models import CertifiedUser
 from routers import obstacles, community, analyze, admin, routing
-from services import detector
+from services import detector, storage
 
 
 @asynccontextmanager
@@ -34,7 +33,7 @@ app.include_router(analyze.router)
 app.include_router(admin.router)
 app.include_router(routing.router)
 
-uploads_dir = Path(__file__).parent / "uploads"
+uploads_dir = storage.UPLOADS_DIR
 uploads_dir.mkdir(exist_ok=True)
 app.mount("/uploads", StaticFiles(directory=str(uploads_dir)), name="uploads")
 

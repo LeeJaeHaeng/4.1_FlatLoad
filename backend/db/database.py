@@ -1,14 +1,32 @@
 from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession, async_sessionmaker
 from sqlalchemy.orm import DeclarativeBase
 from sqlalchemy import text
+from sqlalchemy.pool import NullPool
 from dotenv import load_dotenv
 import os
 
 load_dotenv()
 
 DATABASE_URL = os.getenv("DATABASE_URL", "postgresql+asyncpg://postgres:postgres@localhost:5432/flatroad")
+IS_SQLITE = DATABASE_URL.startswith("sqlite+aiosqlite:")
+USE_NULL_POOL = os.getenv("DB_USE_NULL_POOL", "").lower() in {"1", "true", "yes"} or "pooler.supabase.com" in DATABASE_URL
+DISABLE_STATEMENT_CACHE = (
+    os.getenv("DB_DISABLE_STATEMENT_CACHE", "").lower() in {"1", "true", "yes"}
+    or ":6543" in DATABASE_URL
+    or "pooler.supabase.com" in DATABASE_URL
+)
 
-engine = create_async_engine(DATABASE_URL, echo=False, pool_size=10, max_overflow=20)
+if IS_SQLITE:
+    engine = create_async_engine(DATABASE_URL, echo=False)
+else:
+    engine_options = {"echo": False}
+    if DISABLE_STATEMENT_CACHE:
+        engine_options["connect_args"] = {"statement_cache_size": 0}
+    if USE_NULL_POOL:
+        engine_options["poolclass"] = NullPool
+    else:
+        engine_options.update({"pool_size": 10, "max_overflow": 20})
+    engine = create_async_engine(DATABASE_URL, **engine_options)
 AsyncSessionLocal = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
 
 class Base(DeclarativeBase):
@@ -21,6 +39,12 @@ async def get_db():
 async def create_tables():
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
+        if IS_SQLITE:
+            await conn.execute(text(
+                "INSERT OR IGNORE INTO app_settings (key, value) VALUES ('auto_approve_images', 'true')"
+            ))
+            return
+
         # 신규 컬럼 마이그레이션 (기존 DB 호환)
         await conn.execute(text(
             "ALTER TABLE obstacles ADD COLUMN IF NOT EXISTS ai_detections TEXT"

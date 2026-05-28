@@ -1,6 +1,5 @@
 import json
 import secrets
-from pathlib import Path
 from datetime import datetime, timedelta, timezone
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -12,7 +11,7 @@ from services import storage
 
 router = APIRouter(prefix="/admin", tags=["admin"])
 
-UPLOADS_DIR = Path(__file__).parent.parent / "uploads"
+UPLOADS_DIR = storage.UPLOADS_DIR
 
 
 def _obs_dict(row: Obstacle) -> dict:

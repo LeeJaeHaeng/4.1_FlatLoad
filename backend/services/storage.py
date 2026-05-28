@@ -7,7 +7,7 @@ from urllib.parse import urlparse
 
 load_dotenv()
 
-UPLOADS_DIR = Path(__file__).parent.parent / "uploads"
+UPLOADS_DIR = Path(os.getenv("UPLOADS_DIR", str(Path(__file__).parent.parent / "uploads")))
 UPLOADS_DIR.mkdir(exist_ok=True)
 
 API_BASE_URL = os.getenv("API_BASE_URL", "http://localhost:8000")

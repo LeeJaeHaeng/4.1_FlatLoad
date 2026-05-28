@@ -4,6 +4,7 @@ import { cookies } from "next/headers";
 import NavLink from "@/components/NavLink";
 import LogoutButton from "@/components/LogoutButton";
 import { COOKIE_NAME, verifySessionToken } from "@/lib/auth";
+import { API } from "@/lib/api";
 import "./globals.css";
 
 const geistSans = Geist({ variable: "--font-geist-sans", subsets: ["latin"] });
@@ -76,7 +77,7 @@ export default async function RootLayout({ children }: { children: React.ReactNo
                 style={{ background: "rgba(255,255,255,0.12)" }}
               >
                 <p className="text-white/50 text-xs mb-0.5">백엔드 서버</p>
-                <p className="text-white/80 text-xs font-mono">localhost:8000</p>
+                <p className="text-white/80 text-xs font-mono break-all">{API}</p>
                 <div className="flex items-center gap-1.5 mt-2">
                   <div className="w-1.5 h-1.5 rounded-full bg-[#34A853]" />
                   <span className="text-white/60 text-xs">실행 중</span>
