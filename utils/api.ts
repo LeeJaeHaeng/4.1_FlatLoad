@@ -65,14 +65,19 @@ export async function apiVoteObstacle(
   obstacleId: number,
   userId: string,
   voteType: 'like' | 'dislike'
-): Promise<{ likes: number; dislikes: number; userVote: string | null }> {
+): Promise<{ likes: number; dislikes: number; userVote: 'like' | 'dislike' | null }> {
   const res = await apiFetch(`${API_BASE_URL}/api/obstacles/${obstacleId}/vote`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ user_id: userId, vote_type: voteType }),
   });
   if (!res.ok) throw new Error('투표 실패');
-  return res.json();
+  const data = await res.json();
+  return {
+    likes: data.likes,
+    dislikes: data.dislikes,
+    userVote: data.userVote === 'like' || data.userVote === 'dislike' ? data.userVote : null,
+  };
 }
 
 export async function apiGetUserVote(
@@ -82,7 +87,7 @@ export async function apiGetUserVote(
   const res = await apiFetch(`${API_BASE_URL}/api/obstacles/${obstacleId}/vote/${userId}`);
   if (!res.ok) return null;
   const data = await res.json();
-  return data.userVote;
+  return data.userVote === 'like' || data.userVote === 'dislike' ? data.userVote : null;
 }
 
 export async function apiGetMyObstacles(userId: string): Promise<ApiObstacle[]> {
@@ -243,6 +248,41 @@ export async function apiGetRamps(lat: number, lng: number): Promise<{ lat: numb
   } catch {
     return [];
   }
+}
+
+export type RouteFacilityType = 'ramp' | 'elevator' | 'toilet' | 'charger' | 'parking';
+
+export interface ApiRouteFacility {
+  id: string;
+  type: RouteFacilityType;
+  name: string;
+  address: string;
+  detail?: string;
+  phone?: string;
+  source: 'disabled_facility_api' | 'wheelchair_charger_csv' | 'kakao_local_fallback' | 'overpass_fallback';
+  lat: number;
+  lng: number;
+  distance: number;
+}
+
+export async function apiGetRouteFacilities(
+  lat: number,
+  lng: number,
+  types: RouteFacilityType[],
+  radiusM: number = 3000,
+): Promise<ApiRouteFacility[]> {
+  const params = new URLSearchParams({
+    lat: String(lat),
+    lng: String(lng),
+    radius_m: String(radiusM),
+    types: types.join(','),
+  });
+  const res = await apiFetch(`${API_BASE_URL}/api/route/facilities?${params.toString()}`, undefined, 30000);
+  if (!res.ok) {
+    const errorBody = await res.json().catch(() => ({}));
+    throw new Error(errorBody.detail || '편의시설 조회 실패');
+  }
+  return res.json();
 }
 
 // ── AI 분석 ───────────────────────────────────────────────────────

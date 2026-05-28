@@ -72,7 +72,25 @@ export default function ObstaclesPage() {
     }
   }
 
-  useEffect(() => { load(); }, []);
+  useEffect(() => {
+    let cancelled = false;
+
+    async function loadInitial() {
+      try {
+        const data = await getObstacles();
+        if (cancelled) return;
+        setError(null);
+        setObstacles(data);
+      } catch (e) {
+        if (!cancelled) setError(String(e));
+      } finally {
+        if (!cancelled) setLoading(false);
+      }
+    }
+
+    void loadInitial();
+    return () => { cancelled = true; };
+  }, []);
 
   async function handleApprove(obs: Obstacle) {
     const updated = await toggleApprove(obs.id);

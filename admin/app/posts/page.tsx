@@ -31,7 +31,25 @@ export default function PostsPage() {
     }
   }
 
-  useEffect(() => { load(); }, []);
+  useEffect(() => {
+    let cancelled = false;
+
+    async function loadInitial() {
+      try {
+        const data = await getPosts();
+        if (cancelled) return;
+        setError(null);
+        setPosts(data);
+      } catch (e) {
+        if (!cancelled) setError(String(e));
+      } finally {
+        if (!cancelled) setLoading(false);
+      }
+    }
+
+    void loadInitial();
+    return () => { cancelled = true; };
+  }, []);
 
   async function handleDelete(id: number) {
     if (!confirm("이 게시글과 댓글을 모두 삭제할까요?")) return;

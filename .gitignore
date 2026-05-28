@@ -25,10 +25,12 @@ expo-env.d.ts
 npm-debug.*
 yarn-debug.*
 yarn-error.*
+*.log
 
 # macOS
 .DS_Store
 *.pem
+KakaoTalk_*.mp4
 
 # local env files
 .env*.local
@@ -42,6 +44,9 @@ backend/firebase-adminsdk.json
 __pycache__/
 *.pyc
 *.pyo
+backend/venv/
+backend/cache/
+backend/uploads/
 
 # VSCode
 .vscode/
@@ -53,9 +58,11 @@ __pycache__/
 
 # Claude Code
 .claude/
+.serena/
 
 # typescript
 *.tsbuildinfo
+.tmp-tests/
 
 # generated native folders
 /ios

@@ -286,7 +286,25 @@ export default function CertifiedPage() {
     }
   };
 
-  useEffect(() => { load(); }, []);
+  useEffect(() => {
+    let cancelled = false;
+
+    async function loadInitial() {
+      try {
+        const data = await getCertifiedUsers();
+        if (cancelled) return;
+        setUsers(data);
+        setError(null);
+      } catch {
+        if (!cancelled) setError("백엔드 서버에 연결할 수 없습니다.");
+      } finally {
+        if (!cancelled) setLoading(false);
+      }
+    }
+
+    void loadInitial();
+    return () => { cancelled = true; };
+  }, []);
 
   const handleCreate = async (name: string, affiliation: string): Promise<string> => {
     const result = await createCertifiedUser(name, affiliation);

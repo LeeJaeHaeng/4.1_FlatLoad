@@ -39,6 +39,7 @@ import {
   ApiObstacle,
 } from '../utils/api';
 import { useAuth } from '../context/AuthContext';
+import { getDetectionOverlayLayout } from '../utils/detectionOverlay';
 
 type Screen = 'list' | 'camera' | 'preview';
 
@@ -77,20 +78,41 @@ function DetectionOverlay({ detections, imgWidth, imgHeight }: {
   return (
     <>
       {detections.map((d, i) => {
-        const [cx, cy, bw, bh] = d.bbox;
-        const x = (cx - bw / 2) * imgWidth;
-        const y = (cy - bh / 2) * imgHeight;
         const color = BBOX_COLORS[i % BBOX_COLORS.length];
         const label = LABEL_KO[d.label] ?? d.label;
+        const layout = getDetectionOverlayLayout(d.bbox, imgWidth, imgHeight);
         return (
-          <View key={i} style={{ position: 'absolute', left: x, top: y, width: bw * imgWidth, height: bh * imgHeight }}>
-            <View style={{ position: 'absolute', inset: 0, borderWidth: 2, borderColor: color, borderRadius: 3 }} />
-            <View style={{ position: 'absolute', top: -22, left: 0, backgroundColor: color, borderRadius: 4, paddingHorizontal: 5, paddingVertical: 2 }}>
-              <Text style={{ color: '#fff', fontSize: 11, fontWeight: '700' }}>
+          <React.Fragment key={`${d.label}-${i}`}>
+            <View
+              style={{
+                position: 'absolute',
+                left: layout.boxLeft,
+                top: layout.boxTop,
+                width: layout.boxWidth,
+                height: layout.boxHeight,
+                borderWidth: 2,
+                borderColor: color,
+                borderRadius: 4,
+              }}
+            />
+            <View
+              style={{
+                position: 'absolute',
+                left: layout.labelLeft,
+                top: layout.labelTop,
+                maxWidth: layout.labelMaxWidth,
+                minWidth: 74,
+                backgroundColor: color,
+                borderRadius: 6,
+                paddingHorizontal: 6,
+                paddingVertical: 3,
+              }}
+            >
+              <Text numberOfLines={1} style={{ color: '#fff', fontSize: 11, fontWeight: '700' }}>
                 {label} {Math.round(d.confidence * 100)}%
               </Text>
             </View>
-          </View>
+          </React.Fragment>
         );
       })}
     </>
@@ -449,7 +471,7 @@ export default function ContributeScreen() {
                     <Text style={styles.obstacleCoords}>
                       {item.latitude.toFixed(5)}, {item.longitude.toFixed(5)}
                     </Text>
-                    {(item as any).aiLabel && (
+                    {(item as any).aiLabel ? (
                       <View style={styles.aiLabelRow}>
                         <Text style={styles.aiLabelText}>
                           🤖 {LABEL_KO[(item as any).aiLabel] ?? (item as any).aiLabel}
@@ -458,7 +480,7 @@ export default function ContributeScreen() {
                             : ''}
                         </Text>
                       </View>
-                    )}
+                    ) : null}
                     <View style={styles.obstacleVotes}>
                       <MaterialIcons name="thumb-up" size={13} color="#4285F4" />
                       <Text style={styles.obstacleVoteText}>{item.likes}</Text>
@@ -686,9 +708,9 @@ export default function ContributeScreen() {
   // ── 미리보기 화면 ───────────────────────────────────────────────
   return (
     <KeyboardAvoidingView style={styles.fullScreen} behavior={Platform.OS === 'ios' ? 'padding' : 'height'}>
-      {capturedUri && (
+      {capturedUri ? (
         <Image source={{ uri: capturedUri }} style={StyleSheet.absoluteFill} resizeMode="cover" />
-      )}
+      ) : null}
       <View style={styles.previewOverlay} />
       <SafeAreaView style={styles.previewContent}>
         <Text style={styles.previewTitle}>{exifCoords ? '갤러리 사진' : '촬영된 사진'}</Text>

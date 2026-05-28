@@ -5,37 +5,38 @@
   "scripts": {
     "start": "expo start",
     "android": "expo run:android",
-    "ios": "expo run:ios"
+    "ios": "expo run:ios",
+    "test:unit": "tsc scripts/test-detection-overlay.ts utils/detectionOverlay.ts --module commonjs --target ES2020 --outDir .tmp-tests --skipLibCheck && node .tmp-tests/scripts/test-detection-overlay.js"
   },
   "dependencies": {
     "@expo/vector-icons": "^15.1.1",
-    "@react-native-async-storage/async-storage": "^1.24.0",
+    "@react-native-async-storage/async-storage": "2.2.0",
     "@react-navigation/bottom-tabs": "^7.15.9",
     "@react-navigation/native": "^7.2.2",
-    "expo": "~54.0.33",
-    "expo-auth-session": "~7.0.10",
+    "expo": "~54.0.34",
+    "expo-auth-session": "~7.0.11",
     "expo-camera": "~17.0.10",
-    "expo-file-system": "~19.0.21",
+    "expo-file-system": "~19.0.22",
+    "expo-font": "~14.0.11",
     "expo-image-picker": "~17.0.11",
     "expo-location": "~19.0.8",
     "expo-sensors": "~15.0.8",
     "expo-speech": "~14.0.8",
     "expo-sqlite": "~16.0.10",
     "expo-status-bar": "~3.0.9",
-    "expo-web-browser": "~15.0.10",
+    "expo-web-browser": "~15.0.11",
     "firebase": "^10.14.1",
     "react": "19.1.0",
     "react-native": "0.81.5",
     "react-native-safe-area-context": "~5.6.0",
     "react-native-screens": "~4.16.0",
-    "react-native-webview": "^13.16.1"
+    "react-native-webview": "13.15.0"
   },
   "devDependencies": {
     "@babel/core": "^7.25.2",
     "@react-native-community/cli": "^20.1.3",
-    "@types/react": "^19.2.14",
-    "@types/react-native": "^0.72.8",
-    "babel-preset-expo": "^55.0.17",
+    "@types/react": "~19.1.10",
+    "babel-preset-expo": "~54.0.10",
     "typescript": "^5.3.3"
   }
 }

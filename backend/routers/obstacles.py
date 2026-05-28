@@ -20,7 +20,7 @@ def _to_out(row: Obstacle) -> ObstacleOut:
             pass
     return ObstacleOut(
         id=row.id,
-        photoUri=row.photo_url,
+        photoUri=storage.public_image_url(row.photo_url),
         latitude=row.latitude,
         longitude=row.longitude,
         createdAt=row.created_at.isoformat(),
@@ -65,7 +65,7 @@ async def create_obstacle(
         try:
             return await asyncio.to_thread(detector.detect, image_bytes)
         except Exception as e:
-            print(f"[YOLO-World] 분석 실패: {e}")
+            print(f"[Roboflow] 분석 실패: {e}")
             return []
 
     photo_url, detections = await asyncio.gather(

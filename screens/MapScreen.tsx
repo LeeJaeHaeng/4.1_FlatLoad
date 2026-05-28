@@ -11,7 +11,15 @@ import * as Speech from 'expo-speech';
 import { useFocusEffect } from '@react-navigation/native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { getAllObstaclesWithBase64, ObstacleRecord } from '../utils/database';
-import { apiGetObstacles, apiVoteObstacle, apiGetUserVote, apiGetAvoidLocations, apiGetRamps, DeleteNotification } from '../utils/api';
+import {
+  apiGetObstacles,
+  apiVoteObstacle,
+  apiGetUserVote,
+  apiGetAvoidLocations,
+  apiGetRouteFacilities,
+  DeleteNotification,
+  RouteFacilityType,
+} from '../utils/api';
 import { useAuth } from '../context/AuthContext';
 
 const DEFAULT_LAT = 37.5665;
@@ -49,6 +57,15 @@ const MANEUVER_LABELS: Record<number, string> = {
 const getManeuverIcon = (t: number) => MANEUVER_ICONS[t] ?? '↑';
 const getManeuverLabel = (t: number) => MANEUVER_LABELS[t] ?? '계속 직진';
 const fmtDist = (m: number) => m >= 1000 ? `${(m/1000).toFixed(1)}km` : `${Math.round(m)}m`;
+const durationToMinutes = (duration: string) => {
+  const hours = Number(duration.match(/(\d+)시간/)?.[1] ?? 0);
+  const minutes = Number(duration.match(/(\d+)분/)?.[1] ?? 0);
+  return Math.max(1, hours * 60 + minutes);
+};
+const formatEta = (minutesFromNow: number) => {
+  const date = new Date(Date.now() + Math.max(0, minutesFromNow) * 60_000);
+  return date.toLocaleTimeString('ko-KR', { hour: 'numeric', minute: '2-digit' });
+};
 
 const KAKAO_KEY = process.env.EXPO_PUBLIC_KAKAO_REST_KEY ?? '';
 const KAKAO_JS_KEY = process.env.EXPO_PUBLIC_KAKAO_JS_KEY ?? '';
@@ -58,46 +75,132 @@ function speak(text: string) {
   Speech.speak(text, { language: 'ko-KR', rate: 1.05, pitch: 1.0 });
 }
 
-// 세 필터 모두 Kakao 로컬 검색 사용
-// 경사로: 단일 키워드가 없어 여러 키워드를 병렬 조회 후 합산
-type FilterCfg =
-  | { apiType: 'kakao'; facilityType: string; keywords: string[] }
-  | { apiType: 'overpass'; facilityType: string; query: (lat: number, lng: number) => string };
+type FilterCfg = {
+  facilityType: RouteFacilityType;
+  radiusM?: number;
+  label: string;
+};
+
+interface SearchResultItem {
+  display_name: string;
+  address: string;
+  lat: string;
+  lon: string;
+  distance?: number;
+}
 
 const FILTER_CFG: Record<string, FilterCfg> = {
   '경사로': {
-    apiType: 'kakao',
     facilityType: 'ramp',
-    keywords: ['경사로'],
+    label: '♿ 경사로',
   },
   '엘리베이터': {
-    apiType: 'kakao',
     facilityType: 'elevator',
-    keywords: ['엘리베이터'],
+    label: '🛗 엘리베이터',
   },
   '장애인화장실': {
-    apiType: 'kakao',
     facilityType: 'toilet',
-    keywords: ['장애인화장실'],
+    label: '🚻 장애인화장실',
+  },
+  '충전기': {
+    facilityType: 'charger',
+    radiusM: 5000,
+    label: '🔌 충전기',
   },
 };
+
+const FACILITY_FILTERS = Object.keys(FILTER_CFG);
+
+function normalizeSearchText(value: string): string {
+  return value.toLowerCase().replace(/[\s·ㆍ,./()\-]/g, '');
+}
+
+function scoreSearchResult(doc: any, query: string): number {
+  const name = String(doc.place_name ?? '');
+  const address = String(doc.road_address_name || doc.address_name || '');
+  const normalizedQuery = normalizeSearchText(query);
+  const normalizedName = normalizeSearchText(name);
+  const normalizedText = normalizeSearchText(`${name} ${address}`);
+  const stationTerm = normalizeSearchText(query.replace(/\d+\s*번\s*출구/g, '').replace(/출구/g, '').trim());
+  const exitNumber = query.match(/(\d+)\s*번\s*출구/)?.[1];
+  const tokens = query.split(/\s+/).map(normalizeSearchText).filter(Boolean);
+  const distance = Number(doc.distance);
+
+  let score = 0;
+  if (normalizedName === normalizedQuery) score += 1000;
+  if (normalizedName.startsWith(normalizedQuery)) score += 800;
+  if (normalizedName.includes(normalizedQuery)) score += 700;
+  if (normalizedText.includes(normalizedQuery)) score += 500;
+
+  for (const token of tokens) {
+    if (normalizedName.includes(token)) score += 80;
+    else if (normalizedText.includes(token)) score += 35;
+  }
+
+  if (stationTerm) {
+    if (normalizedName.includes(stationTerm)) score += 450;
+    else if (normalizedText.includes(stationTerm)) score += 220;
+    else if (stationTerm.includes('역') && normalizedName.includes('역')) score -= 350;
+  }
+
+  if (exitNumber) {
+    const normalizedExit = `${exitNumber}번출구`;
+    if (normalizedName.includes(normalizedExit)) score += 180;
+    else if (normalizedText.includes(normalizedExit)) score += 110;
+  }
+
+  if (Number.isFinite(distance)) {
+    score -= Math.min(distance / 1000, 30);
+  }
+
+  return score;
+}
 
 function buildMapHTML(lat: number, lng: number): string {
   return `<!DOCTYPE html>
 <html>
 <head>
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-  <script type="text/javascript" src="https://dapi.kakao.com/v2/maps/sdk.js?appkey=${KAKAO_JS_KEY}&autoload=false"></script>
+  <script>
+    function reportMapError(message) {
+      if (window.ReactNativeWebView) {
+        window.ReactNativeWebView.postMessage(JSON.stringify({ type: 'mapError', message: message }));
+      }
+    }
+    window.onerror = function(message, source, lineno, colno, error) {
+      reportMapError(error && error.message ? error.message : String(message || '지도 스크립트 오류'));
+      return true;
+    };
+  </script>
+  <script type="text/javascript" src="https://dapi.kakao.com/v2/maps/sdk.js?appkey=${KAKAO_JS_KEY}&autoload=false" onerror="reportMapError('Kakao 지도 SDK를 불러오지 못했습니다.')"></script>
   <style>
     * { margin: 0; padding: 0; box-sizing: border-box; }
-    html, body { width: 100%; height: 100%; overflow: hidden; }
-    #map { width: 100%; height: 100%; }
+    html, body { width: 100%; height: 100%; overflow: hidden; background: #edf1f5; }
+    #map {
+      width: 100%;
+      height: 100%;
+      background: #edf1f5;
+      transition: filter 220ms ease-out;
+    }
+    body.nav-mode #map {
+      filter: saturate(1.08) contrast(1.05) brightness(0.92);
+    }
   </style>
 </head>
 <body>
   <div id="map"></div>
   <script>
+    (function() {
+    if (!'${KAKAO_JS_KEY}') {
+      reportMapError('EXPO_PUBLIC_KAKAO_JS_KEY가 비어 있습니다.');
+      return;
+    }
+    if (!window.kakao || !window.kakao.maps) {
+      reportMapError('Kakao 지도 SDK가 준비되지 않았습니다.');
+      return;
+    }
     kakao.maps.load(function() {
+    try {
     var map = new kakao.maps.Map(document.getElementById('map'), {
       center: new kakao.maps.LatLng(${lat}, ${lng}),
       level: 3
@@ -113,6 +216,18 @@ function buildMapHTML(lat: number, lng: number): string {
     var destOverlay = null;
     var facilityOverlays = [];
     var maneuverOverlays = [];
+    var navMode = false;
+    var readySent = false;
+    var readyTimer = setTimeout(function() {
+      if (!readySent) reportMapError('지도 타일을 불러오지 못했습니다. 네트워크와 Kakao JavaScript 키 도메인 설정을 확인하세요.');
+    }, 12000);
+
+    function reportMapReady() {
+      if (readySent) return;
+      readySent = true;
+      clearTimeout(readyTimer);
+      window.ReactNativeWebView.postMessage(JSON.stringify({ type: 'mapReady' }));
+    }
 
     function buildLocationSVG(heading, showHeading) {
       var svg = '<svg width="80" height="80" viewBox="0 0 80 80" xmlns="http://www.w3.org/2000/svg">';
@@ -136,11 +251,20 @@ function buildMapHTML(lat: number, lng: number): string {
     });
     userOverlay.setMap(map);
 
+    kakao.maps.event.addListener(map, 'zoom_changed', function() {
+      if (navMode && userOverlay) {
+        map.setCenter(userOverlay.getPosition());
+      }
+    });
+
     function updateLocation(lat, lng, accuracy) {
       var pos = new kakao.maps.LatLng(lat, lng);
       if (userOverlay) {
         userOverlay.setPosition(pos);
         userOverlay.setContent('<div style="width:80px;height:80px;">' + buildLocationSVG(currentHeading, hasHeading) + '</div>');
+      }
+      if (navMode) {
+        map.setCenter(pos);
       }
       if (accuracyCircle) accuracyCircle.setMap(null);
       if (accuracy && accuracy < 500) {
@@ -160,6 +284,9 @@ function buildMapHTML(lat: number, lng: number): string {
     function updateHeading(heading) {
       currentHeading = heading;
       hasHeading = true;
+      if (navMode) {
+        map.setCenter(userOverlay.getPosition());
+      }
       if (userOverlay) {
         userOverlay.setContent('<div style="width:80px;height:80px;">' + buildLocationSVG(heading, true) + '</div>');
       }
@@ -167,6 +294,17 @@ function buildMapHTML(lat: number, lng: number): string {
 
     function flyToLocation(lat, lng) {
       map.setCenter(new kakao.maps.LatLng(lat, lng));
+    }
+
+    function setNavigationMode(active) {
+      navMode = !!active;
+      document.body.classList.toggle('nav-mode', navMode);
+      if (navMode) {
+        map.setLevel(2);
+        if (userOverlay) map.setCenter(userOverlay.getPosition());
+      } else {
+        map.setLevel(3);
+      }
     }
 
     function onObstacleClick(id) {
@@ -216,7 +354,7 @@ function buildMapHTML(lat: number, lng: number): string {
     }
 
     function addFacilityMarker(lat, lng, type) {
-      var cfg = { elevator:{e:'🛗',c:'#2196F3'}, ramp:{e:'♿',c:'#4CAF50'}, toilet:{e:'🚻',c:'#9C27B0'}, slope:{e:'⚠️',c:'#FF5722'} }[type] || {e:'📍',c:'#607D8B'};
+      var cfg = { elevator:{e:'🛗',c:'#2196F3'}, ramp:{e:'♿',c:'#4CAF50'}, toilet:{e:'🚻',c:'#9C27B0'}, charger:{e:'🔌',c:'#00A693'}, slope:{e:'⚠️',c:'#FF5722'} }[type] || {e:'📍',c:'#607D8B'};
       var content = '<div style="width:34px;height:34px;border-radius:50%;background:'+cfg.c+';display:flex;align-items:center;justify-content:center;font-size:17px;border:2.5px solid white;box-shadow:0 2px 6px rgba(0,0,0,0.35);">'+cfg.e+'</div>';
       var overlay = new kakao.maps.CustomOverlay({
         position: new kakao.maps.LatLng(lat, lng),
@@ -258,6 +396,7 @@ function buildMapHTML(lat: number, lng: number): string {
     function drawRoute(coords, color) {
       if (routePolyline) routePolyline.setMap(null);
       var path = coords.map(function(c) { return new kakao.maps.LatLng(c[1], c[0]); });
+      if (path.length < 2) return;
       routePolyline = new kakao.maps.Polyline({
         path: path,
         strokeWeight: 5,
@@ -266,7 +405,9 @@ function buildMapHTML(lat: number, lng: number): string {
         strokeStyle: 'solid'
       });
       routePolyline.setMap(map);
-      map.setBounds(routePolyline.getBounds(), 80, 80, 80, 80);
+      var bounds = new kakao.maps.LatLngBounds();
+      path.forEach(function(point) { bounds.extend(point); });
+      map.setBounds(bounds, 80, 80, 80, 80);
     }
 
     function clearRoute() {
@@ -326,6 +467,7 @@ function buildMapHTML(lat: number, lng: number): string {
     window.updateLocation = updateLocation;
     window.updateHeading = updateHeading;
     window.flyToLocation = flyToLocation;
+    window.setNavigationMode = setNavigationMode;
     window.onObstacleClick = onObstacleClick;
     window.addObstacleMarker = addObstacleMarker;
     window.clearObstacleMarkers = clearObstacleMarkers;
@@ -336,8 +478,12 @@ function buildMapHTML(lat: number, lng: number): string {
     window.drawRoute = drawRoute;
     window.clearRoute = clearRoute;
     window.addDestMarker = addDestMarker;
-    window.ReactNativeWebView.postMessage(JSON.stringify({ type: 'mapReady' }));
+    kakao.maps.event.addListener(map, 'tilesloaded', reportMapReady);
+    } catch (e) {
+      reportMapError(e && e.message ? e.message : '지도 초기화에 실패했습니다.');
+    }
     }); // kakao.maps.load
+    })();
   </script>
 </body>
 </html>`;
@@ -351,6 +497,8 @@ export default function MapScreen({ navigation }: any) {
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [mapReady, setMapReady] = useState(false);
+  const [mapLoadError, setMapLoadError] = useState<string | null>(null);
+  const [mapReloadKey, setMapReloadKey] = useState(0);
   const [obstacles, setObstacles] = useState<(ObstacleRecord & { photoBase64: string })[]>([]);
   const [selectedObstacle, setSelectedObstacle] = useState<ObstacleRecord | null>(null);
   const [groupObstacles, setGroupObstacles] = useState<ObstacleRecord[] | null>(null);
@@ -369,7 +517,7 @@ export default function MapScreen({ navigation }: any) {
   // 길찾기 상태
   const [showSearch, setShowSearch] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
-  const [searchResults, setSearchResults] = useState<{ display_name: string; address: string; lat: string; lon: string }[]>([]);
+  const [searchResults, setSearchResults] = useState<SearchResultItem[]>([]);
   const [searching, setSearching] = useState(false);
   const [destination, setDestination] = useState('');
   const [destCoords, setDestCoords] = useState<{ lat: number; lng: number } | null>(null);
@@ -397,7 +545,10 @@ export default function MapScreen({ navigation }: any) {
       const first = maneuvers[0];
       const label = getManeuverLabel(first.type);
       const dist = first.length > 0 ? `${Math.round(first.length * 1000)}미터 후 ` : '';
-      speak(`안내를 시작합니다. ${dist}${label}`);
+      const prefix = routeInfo?.mode === 'safe'
+        ? '장애물을 피하는 안전 보행 경로 안내를 시작합니다.'
+        : '경로 안내를 시작합니다.';
+      speak(`${prefix} ${dist}${label}`);
     } else if (!isNavigating) {
       Speech.stop();
     }
@@ -483,18 +634,22 @@ export default function MapScreen({ navigation }: any) {
     Keyboard.dismiss();
     setSearching(true);
     try {
-      const locParam = location ? `&x=${location.lng}&y=${location.lat}&sort=distance` : '';
+      const locParam = location ? `&x=${location.lng}&y=${location.lat}` : '';
       const res = await fetch(
-        `https://dapi.kakao.com/v2/local/search/keyword.json?query=${encodeURIComponent(searchQuery)}&size=10${locParam}`,
+        `https://dapi.kakao.com/v2/local/search/keyword.json?query=${encodeURIComponent(searchQuery)}&size=15&sort=accuracy${locParam}`,
         { headers: { Authorization: `KakaoAK ${KAKAO_KEY}` } }
       );
       const data = await res.json();
-      setSearchResults((data.documents ?? []).map((doc: any) => ({
-        display_name: doc.place_name,
-        address: doc.road_address_name || doc.address_name || '',
-        lat: doc.y,
-        lon: doc.x,
-      })));
+      const ranked = [...(data.documents ?? [])]
+        .sort((a: any, b: any) => scoreSearchResult(b, searchQuery) - scoreSearchResult(a, searchQuery))
+        .map((doc: any) => ({
+          display_name: doc.place_name,
+          address: doc.road_address_name || doc.address_name || '',
+          lat: doc.y,
+          lon: doc.x,
+          distance: Number(doc.distance),
+        }));
+      setSearchResults(ranked);
     } catch {
       Alert.alert('오류', '검색 중 문제가 발생했습니다.');
     } finally {
@@ -605,7 +760,7 @@ export default function MapScreen({ navigation }: any) {
           `drawRoute(${JSON.stringify(geoCoords)}, '#4285F4'); true;`
         );
 
-        const parsedManeuvers: ManeuverStep[] = (leg.maneuvers ?? []).map((m: any) => ({
+        let parsedManeuvers: ManeuverStep[] = (leg.maneuvers ?? []).map((m: any) => ({
           type: m.type,
           instruction: getManeuverLabel(m.type),
           length: m.length ?? 0,
@@ -613,6 +768,26 @@ export default function MapScreen({ navigation }: any) {
           lat: latlngs[m.begin_shape_index]?.[0] ?? fromLat,
           lng: latlngs[m.begin_shape_index]?.[1] ?? fromLng,
         }));
+        if (parsedManeuvers.length === 0) {
+          parsedManeuvers = [
+            {
+              type: 1,
+              instruction: '경로를 따라 이동',
+              length: distKm,
+              beginShapeIndex: 0,
+              lat: fromLat,
+              lng: fromLng,
+            },
+            {
+              type: 4,
+              instruction: '목적지 도착',
+              length: 0,
+              beginShapeIndex: Math.max(0, latlngs.length - 1),
+              lat: toLat,
+              lng: toLng,
+            },
+          ];
+        }
         setRoutePoints(latlngs);
         setManeuvers(parsedManeuvers);
         setCurrentManeuverIdx(0);
@@ -674,6 +849,35 @@ export default function MapScreen({ navigation }: any) {
     webViewRef.current?.injectJavaScript(
       `drawRoute(${JSON.stringify(route.geometry.coordinates)}, '${color}'); true;`
     );
+    if (mode === 'safe') {
+      const fallbackManeuvers: ManeuverStep[] = [
+        {
+          type: 1,
+          instruction: '경로를 따라 이동',
+          length: dist / 1000,
+          beginShapeIndex: 0,
+          lat: fromLat,
+          lng: fromLng,
+        },
+        {
+          type: 4,
+          instruction: '목적지 도착',
+          length: 0,
+          beginShapeIndex: Math.max(0, latlngs.length - 1),
+          lat: toLat,
+          lng: toLng,
+        },
+      ];
+      setRoutePoints(latlngs);
+      setManeuvers(fallbackManeuvers);
+      setCurrentManeuverIdx(0);
+      setDistToNextTurn(dist);
+    } else {
+      setRoutePoints([]);
+      setManeuvers([]);
+      setCurrentManeuverIdx(0);
+      setDistToNextTurn(0);
+    }
   };
 
   const fetchSlopeWarnings = async (routePts: [number, number][]) => {
@@ -716,57 +920,18 @@ export default function MapScreen({ navigation }: any) {
 
     setFilterLoading(filterName);
     try {
-      let count = 0;
-      const seen = new Set<string>();
-
-      if (cfg.apiType === 'overpass') {
-        // ── 백엔드 프록시를 통한 경사로 검색 (Overpass 직접 호출 406 우회) ──
-        const ramps = await apiGetRamps(location.lat, location.lng);
-        ramps.forEach(({ lat, lon }) => {
-          const key = `${lat.toFixed(5)},${lon.toFixed(5)}`;
-          if (!seen.has(key)) {
-            seen.add(key);
-            webViewRef.current?.injectJavaScript(
-              `addFacilityMarker(${lat}, ${lon}, '${cfg.facilityType}'); true;`
-            );
-            count++;
-          }
-        });
-      } else {
-        // ── Kakao 로컬 검색 ───────────────────────────────────────────
-        if (!KAKAO_KEY || KAKAO_KEY === '여기에_카카오_REST_API_키_입력') {
-          Alert.alert('설정 필요', '.env 파일에 EXPO_PUBLIC_KAKAO_REST_KEY를 입력해주세요.');
-          return;
-        }
-
-        for (const keyword of cfg.keywords) {
-          for (let page = 1; page <= 3; page++) {
-            const url =
-              `https://dapi.kakao.com/v2/local/search/keyword.json` +
-              `?query=${encodeURIComponent(keyword)}` +
-              `&x=${location.lng}&y=${location.lat}` +
-              `&radius=3000&size=15&page=${page}`;
-            const res = await fetch(url, {
-              headers: { Authorization: `KakaoAK ${KAKAO_KEY}` },
-            });
-            if (!res.ok) throw new Error(`Kakao API 오류: ${res.status}`);
-            const data = await res.json();
-            (data.documents ?? []).forEach((doc: any) => {
-              const lat = parseFloat(doc.y);
-              const lng = parseFloat(doc.x);
-              const key = `${lat.toFixed(5)},${lng.toFixed(5)}`;
-              if (lat && lng && !seen.has(key)) {
-                seen.add(key);
-                webViewRef.current?.injectJavaScript(
-                  `addFacilityMarker(${lat}, ${lng}, '${cfg.facilityType}'); true;`
-                );
-                count++;
-              }
-            });
-            if (data.meta?.is_end) break;
-          }
-        }
-      }
+      const facilities = await apiGetRouteFacilities(
+        location.lat,
+        location.lng,
+        [cfg.facilityType],
+        cfg.radiusM ?? 3000,
+      );
+      facilities.forEach(({ lat, lng, type }) => {
+        webViewRef.current?.injectJavaScript(
+          `addFacilityMarker(${lat}, ${lng}, '${type}'); true;`
+        );
+      });
+      const count = facilities.length;
 
       setActiveFilters(prev => new Set([...prev, filterName]));
       if (count === 0) {
@@ -785,7 +950,7 @@ export default function MapScreen({ navigation }: any) {
     }
   };
 
-  const selectDestination = async (item: { display_name: string; address: string; lat: string; lon: string }) => {
+  const selectDestination = async (item: SearchResultItem) => {
     setShowSearch(false);
     setSearchResults([]);
     const shortName = item.display_name;
@@ -980,6 +1145,20 @@ export default function MapScreen({ navigation }: any) {
 
   useEffect(() => {
     if (!mapReady) return;
+    webViewRef.current?.injectJavaScript(`
+      setNavigationMode(${isNavigating ? 'true' : 'false'});
+      true;
+    `);
+    if (isNavigating && location) {
+      webViewRef.current?.injectJavaScript(`
+        flyToLocation(${location.lat}, ${location.lng});
+        true;
+      `);
+    }
+  }, [isNavigating, mapReady, location]);
+
+  useEffect(() => {
+    if (!mapReady) return;
     const filtered = obstacleFilter === 'certified'
       ? obstacles.filter(o => (o as any).isCertified)
       : obstacles;
@@ -1021,6 +1200,29 @@ export default function MapScreen({ navigation }: any) {
     `);
   }, [obstacles, mapReady, obstacleFilter]);
 
+  const startNavigation = () => {
+    if (!routeInfo || routeInfo.mode !== 'safe' || maneuvers.length === 0) {
+      if (location && destCoords) {
+        fetchRoute(location.lat, location.lng, destCoords.lat, destCoords.lng, 'safe');
+      }
+      return;
+    }
+    prevManeuverIdxRef.current = -1;
+    setCurrentManeuverIdx(0);
+    setDistToNextTurn(Math.round((maneuvers[0]?.length ?? 0) * 1000));
+    setIsNavigating(true);
+  };
+
+  const stopNavigation = () => {
+    setIsNavigating(false);
+    setManeuvers([]);
+    setRoutePoints([]);
+    setCurrentManeuverIdx(0);
+    setDistToNextTurn(0);
+    Speech.stop();
+    webViewRef.current?.injectJavaScript(`setNavigationMode(false); true;`);
+  };
+
   const flyToCurrentLocation = () => {
     if (!location) return;
     webViewRef.current?.injectJavaScript(`
@@ -1048,24 +1250,57 @@ export default function MapScreen({ navigation }: any) {
 
   const initLat = location?.lat ?? DEFAULT_LAT;
   const initLng = location?.lng ?? DEFAULT_LNG;
+  const currentStep = maneuvers[currentManeuverIdx];
+  const nextStep = maneuvers[currentManeuverIdx + 1];
+  const currentInstruction = currentStep?.instruction || getManeuverLabel(currentStep?.type ?? 1);
+  const currentIcon = getManeuverIcon(currentStep?.type ?? 1);
+  const nextInstruction = nextStep
+    ? `${fmtDist(Math.round((nextStep.length ?? 0) * 1000))} 후 ${getManeuverLabel(nextStep.type)}`
+    : '목적지까지 계속 이동';
+  const remainingDistance = (() => {
+    if (!location || routePoints.length < 2) return routeInfo?.distance ?? '';
+    let nearestIdx = 0;
+    let nearestDistance = Infinity;
+    routePoints.forEach(([lat, lng], idx) => {
+      const distance = haversine(location.lat, location.lng, lat, lng);
+      if (distance < nearestDistance) {
+        nearestDistance = distance;
+        nearestIdx = idx;
+      }
+    });
+    let total = nearestDistance;
+    for (let i = nearestIdx; i < routePoints.length - 1; i++) {
+      total += haversine(routePoints[i][0], routePoints[i][1], routePoints[i + 1][0], routePoints[i + 1][1]);
+    }
+    return fmtDist(total);
+  })();
+  const etaText = routeInfo ? formatEta(durationToMinutes(routeInfo.duration)) : '';
 
   return (
     <View style={styles.container}>
       {/* 지도 (전체 화면) */}
       <WebView
+        key={mapReloadKey}
         ref={webViewRef}
         style={StyleSheet.absoluteFill}
         source={{ html: buildMapHTML(initLat, initLng), baseUrl: 'http://localhost' }}
         originWhitelist={['*']}
         javaScriptEnabled
         domStorageEnabled
-        onLoad={() => {}}
-        onError={() => setErrorMsg('지도를 불러오는 데 실패했습니다.')}
+        onLoadStart={() => {
+          setMapReady(false);
+          setMapLoadError(null);
+        }}
+        onError={() => setMapLoadError('지도를 불러오는 데 실패했습니다.')}
         onMessage={(e) => {
           try {
             const msg = JSON.parse(e.nativeEvent.data);
             if (msg.type === 'mapReady') {
               setMapReady(true);
+              setMapLoadError(null);
+            } else if (msg.type === 'mapError') {
+              setMapReady(false);
+              setMapLoadError(msg.message || '지도 초기화에 실패했습니다.');
             } else if (msg.type === 'obstacleClick') {
               const groupIds = groupMapRef.current[msg.id] ?? [msg.id];
               if (groupIds.length > 1) {
@@ -1082,7 +1317,39 @@ export default function MapScreen({ navigation }: any) {
         }}
       />
 
+      {!mapReady || mapLoadError ? (
+        <View pointerEvents={mapLoadError ? 'auto' : 'none'} style={styles.mapStatusOverlay}>
+          <View style={styles.mapStatusCard}>
+            {mapLoadError ? (
+              <>
+                <MaterialIcons name="map" size={28} color="#F5A623" />
+                <Text style={styles.mapStatusTitle}>지도를 표시할 수 없습니다</Text>
+                <Text style={styles.mapStatusText}>{mapLoadError}</Text>
+                <TouchableOpacity
+                  style={styles.mapRetryButton}
+                  onPress={() => {
+                    setMapLoadError(null);
+                    setMapReady(false);
+                    setMapReloadKey(key => key + 1);
+                  }}
+                  activeOpacity={0.8}
+                >
+                  <MaterialIcons name="refresh" size={18} color="#fff" />
+                  <Text style={styles.mapRetryText}>다시 불러오기</Text>
+                </TouchableOpacity>
+              </>
+            ) : (
+              <>
+                <ActivityIndicator size="small" color="#F5A623" />
+                <Text style={styles.mapStatusText}>지도 불러오는 중...</Text>
+              </>
+            )}
+          </View>
+        </View>
+      ) : null}
+
       {/* 상단 오버레이: 검색창 + 필터 */}
+      {!isNavigating && (
       <View style={[styles.topOverlay, { paddingTop: insets.top + 8 }]}>
         <View style={styles.searchRow}>
           <TouchableOpacity
@@ -1098,23 +1365,18 @@ export default function MapScreen({ navigation }: any) {
             ) : (
               <Text style={styles.searchPlaceholder}>목적지 검색</Text>
             )}
-            {destination && (
+            {destination ? (
               <TouchableOpacity onPress={clearDestination} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
                 <MaterialIcons name="close" size={18} color="#aaa" />
               </TouchableOpacity>
-            )}
+            ) : null}
           </TouchableOpacity>
           <TouchableOpacity style={styles.editButton} onPress={showWip} activeOpacity={0.8}>
             <MaterialIcons name="edit-note" size={26} color="#333" />
           </TouchableOpacity>
         </View>
 
-        <ScrollView
-          horizontal
-          showsHorizontalScrollIndicator={false}
-          contentContainerStyle={styles.filterContent}
-          style={styles.filterScroll}
-        >
+        <View style={styles.filterWrap}>
           <TouchableOpacity
             style={[styles.filterChip, obstacleFilter === 'certified' && styles.filterChipActive]}
             onPress={() => setShowObstacleFilterModal(true)}
@@ -1125,7 +1387,8 @@ export default function MapScreen({ navigation }: any) {
               {obstacleFilter === 'certified' ? ' ⭐ 인증 장애물' : ' 필터'}
             </Text>
           </TouchableOpacity>
-          {(['경사로', '엘리베이터', '장애인화장실'] as const).map((name) => {
+          {FACILITY_FILTERS.map((name) => {
+            const cfg = FILTER_CFG[name];
             const active = activeFilters.has(name);
             const loading = filterLoading === name;
             return (
@@ -1139,7 +1402,7 @@ export default function MapScreen({ navigation }: any) {
                   {loading
                     ? <ActivityIndicator size={12} color={active ? '#fff' : '#555'} />
                     : <Text style={active ? styles.filterChipActiveText : styles.filterChipText}>
-                        {name === '경사로' ? '♿ 경사로' : name === '엘리베이터' ? '🛗 엘리베이터' : '🚻 장애인화장실'}
+                        {cfg.label}
                       </Text>
                   }
                 </TouchableOpacity>
@@ -1158,38 +1421,88 @@ export default function MapScreen({ navigation }: any) {
               </React.Fragment>
             );
           })}
-        </ScrollView>
+        </View>
       </View>
+      )}
 
-      {/* 실시간 내비게이션 패널 */}
+      {/* 전용 내비게이션 화면 */}
       {isNavigating && maneuvers.length > 0 && (
-        <View style={[styles.navPanel, { top: insets.top + 8 }]}>
-          <View style={styles.navPanelInner}>
-            <Text style={styles.navArrow}>{getManeuverIcon(maneuvers[currentManeuverIdx]?.type ?? 1)}</Text>
-            <View style={styles.navTextBox}>
-              <Text style={styles.navInstruction} numberOfLines={2}>
-                {maneuvers[currentManeuverIdx]?.instruction ?? getManeuverLabel(maneuvers[currentManeuverIdx]?.type ?? 1)}
-              </Text>
-              <Text style={styles.navDist}>{fmtDist(distToNextTurn)}</Text>
+        <>
+          <View pointerEvents="none" style={styles.navigationDim} />
+          <View style={[styles.navTurnCard, { top: insets.top + 10 }]}>
+            <View style={styles.navTurnMain}>
+              <Text style={styles.navTurnArrow}>{currentIcon}</Text>
+              <View style={styles.navTurnTextBox}>
+                <Text style={styles.navTurnDistance}>{fmtDist(distToNextTurn)}</Text>
+                <Text style={styles.navTurnInstruction} numberOfLines={1}>
+                  {currentInstruction}
+                </Text>
+              </View>
             </View>
-            <TouchableOpacity
-              style={styles.navClose}
-              onPress={() => { setIsNavigating(false); setManeuvers([]); setRoutePoints([]); Speech.stop(); }}
-              hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
-            >
-              <MaterialIcons name="close" size={20} color="#fff" />
+            <View style={styles.navNextRow}>
+              <Text style={styles.navNextArrow}>{nextStep ? getManeuverIcon(nextStep.type) : '🏁'}</Text>
+              <Text style={styles.navNextText} numberOfLines={1}>
+                {nextInstruction}
+              </Text>
+            </View>
+          </View>
+
+          <View style={[styles.navStatusStack, { top: insets.top + 148 }]}>
+            <View style={styles.navSpeedBadge}>
+              <Text style={styles.navSpeedValue}>0</Text>
+              <Text style={styles.navSpeedUnit}>km/h</Text>
+            </View>
+            {routeInfo?.obstacleCount ? (
+              <View style={styles.navObstacleBadge}>
+                <MaterialIcons name="warning" size={18} color="#FF5722" />
+                <Text style={styles.navObstacleText}>{routeInfo.obstacleCount}개</Text>
+              </View>
+            ) : null}
+          </View>
+
+          <View style={[styles.navRightStack, { top: insets.top + 84 }]}>
+            <TouchableOpacity style={styles.navRoundBtn} activeOpacity={0.8}>
+              <MaterialIcons name="mic" size={23} color="#26D367" />
+            </TouchableOpacity>
+            <TouchableOpacity style={styles.navRoundBtn} onPress={flyToCurrentLocation} activeOpacity={0.8}>
+              <MaterialIcons name="my-location" size={23} color="#fff" />
+            </TouchableOpacity>
+            <TouchableOpacity style={styles.navRoundBtn} activeOpacity={0.8}>
+              <MaterialIcons name="layers" size={23} color="#fff" />
             </TouchableOpacity>
           </View>
+
           {isRerouting && (
-            <View style={styles.navReroute}>
+            <View style={styles.navToast}>
               <ActivityIndicator size="small" color="#fff" />
-              <Text style={styles.navRerouteText}>경로 재탐색 중...</Text>
+              <Text style={styles.navToastText}>경로 재탐색 중...</Text>
             </View>
           )}
-        </View>
+
+          <View style={[styles.navBottomBar, { paddingBottom: insets.bottom + 10 }]}>
+            <View style={styles.navBottomMeta}>
+              <Text style={styles.navBottomLabel}>안전 보행 안내</Text>
+              <Text style={styles.navBottomTitle} numberOfLines={1}>
+                {destination || '목적지'}
+              </Text>
+              <Text style={styles.navBottomSub}>
+                {etaText} 도착 · {remainingDistance || routeInfo?.distance || '-'}
+              </Text>
+            </View>
+            <TouchableOpacity
+              style={styles.navMenuBtn}
+              onPress={stopNavigation}
+              activeOpacity={0.8}
+            >
+              <MaterialIcons name="stop" size={22} color="#fff" />
+              <Text style={styles.navMenuText}>종료</Text>
+            </TouchableOpacity>
+          </View>
+        </>
       )}
 
       {/* 우측 플로팅 버튼들 */}
+      {!isNavigating && (
       <View style={styles.rightButtons}>
         <TouchableOpacity
           style={styles.mapIconBtn}
@@ -1217,9 +1530,11 @@ export default function MapScreen({ navigation }: any) {
           <MaterialIcons name="add" size={22} color="#333" />
         </TouchableOpacity>
       </View>
+      )}
 
 
       {/* 하단 경로 시트 */}
+      {!isNavigating && (
       <View style={[styles.bottomSheet, { paddingBottom: insets.bottom + 16 }]}>
         <View style={styles.dragHandle} />
         {routeLoading ? (
@@ -1284,17 +1599,17 @@ export default function MapScreen({ navigation }: any) {
         {routeInfo && !isNavigating && maneuvers.length > 0 && (
           <TouchableOpacity
             style={styles.startNavBtn}
-            onPress={() => { setIsNavigating(true); setCurrentManeuverIdx(0); }}
+            onPress={startNavigation}
             activeOpacity={0.8}
           >
             <MaterialIcons name="navigation" size={18} color="#fff" />
-            <Text style={styles.startNavBtnText}>안내 시작</Text>
+            <Text style={styles.startNavBtnText}>안전 안내 시작</Text>
           </TouchableOpacity>
         )}
         {isNavigating && (
           <TouchableOpacity
             style={styles.stopNavBtn}
-            onPress={() => { setIsNavigating(false); setManeuvers([]); setRoutePoints([]); Speech.stop(); }}
+            onPress={stopNavigation}
             activeOpacity={0.8}
           >
             <MaterialIcons name="stop" size={18} color="#e53935" />
@@ -1302,6 +1617,7 @@ export default function MapScreen({ navigation }: any) {
           </TouchableOpacity>
         )}
       </View>
+      )}
 
       {/* 목적지 검색 모달 */}
       <Modal visible={showSearch} animationType="slide" onRequestClose={() => setShowSearch(false)}>
@@ -1538,6 +1854,54 @@ const styles = StyleSheet.create({
     flex: 1,
     backgroundColor: '#e8e8e8',
   },
+  mapStatusOverlay: {
+    ...StyleSheet.absoluteFillObject,
+    justifyContent: 'center',
+    alignItems: 'center',
+    paddingHorizontal: 28,
+  },
+  mapStatusCard: {
+    minWidth: 220,
+    maxWidth: 320,
+    alignItems: 'center',
+    gap: 8,
+    paddingHorizontal: 18,
+    paddingVertical: 16,
+    borderRadius: 16,
+    backgroundColor: 'rgba(255,255,255,0.94)',
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 3 },
+    shadowOpacity: 0.16,
+    shadowRadius: 8,
+    elevation: 6,
+  },
+  mapStatusTitle: {
+    fontSize: 15,
+    fontWeight: '800',
+    color: '#222',
+    textAlign: 'center',
+  },
+  mapStatusText: {
+    fontSize: 12,
+    color: '#777',
+    textAlign: 'center',
+    lineHeight: 18,
+  },
+  mapRetryButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    marginTop: 4,
+    paddingHorizontal: 14,
+    paddingVertical: 9,
+    borderRadius: 18,
+    backgroundColor: '#F5A623',
+  },
+  mapRetryText: {
+    color: '#fff',
+    fontWeight: '700',
+    fontSize: 13,
+  },
   centered: {
     flex: 1,
     justifyContent: 'center',
@@ -1612,13 +1976,19 @@ const styles = StyleSheet.create({
     gap: 8,
     paddingRight: 8,
   },
+  filterWrap: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 8,
+    paddingRight: 4,
+  },
   filterChip: {
     flexDirection: 'row',
     alignItems: 'center',
     backgroundColor: '#fff',
     borderRadius: 20,
-    paddingHorizontal: 14,
-    paddingVertical: 8,
+    paddingHorizontal: 12,
+    paddingVertical: 7,
     shadowColor: '#000',
     shadowOffset: { width: 0, height: 1 },
     shadowOpacity: 0.1,
@@ -1949,64 +2319,197 @@ const styles = StyleSheet.create({
     color: '#aaa',
   },
 
-  /* 실시간 내비게이션 패널 */
-  navPanel: {
+  /* 전용 내비게이션 화면 */
+  navigationDim: {
+    ...StyleSheet.absoluteFillObject,
+    backgroundColor: 'rgba(0,0,0,0.12)',
+  },
+  navTurnCard: {
     position: 'absolute',
-    left: 16,
-    right: 16,
-    backgroundColor: '#1A1A1A',
-    borderRadius: 16,
+    left: 12,
+    width: 222,
+    borderRadius: 8,
     overflow: 'hidden',
+    backgroundColor: '#0B5FC7',
     shadowColor: '#000',
     shadowOffset: { width: 0, height: 4 },
-    shadowOpacity: 0.3,
+    shadowOpacity: 0.25,
     shadowRadius: 8,
     elevation: 12,
   },
-  navPanelInner: {
+  navTurnMain: {
     flexDirection: 'row',
     alignItems: 'center',
-    paddingHorizontal: 16,
-    paddingVertical: 14,
     gap: 12,
+    paddingHorizontal: 14,
+    paddingTop: 12,
+    paddingBottom: 10,
   },
-  navArrow: {
-    fontSize: 32,
-    width: 40,
+  navTurnArrow: {
+    width: 54,
     textAlign: 'center',
-  },
-  navTextBox: {
-    flex: 1,
-    gap: 2,
-  },
-  navInstruction: {
-    fontSize: 16,
-    fontWeight: '700',
     color: '#fff',
+    fontSize: 44,
+    fontWeight: '900',
   },
-  navDist: {
-    fontSize: 13,
-    color: '#aaa',
-    fontWeight: '500',
+  navTurnTextBox: {
+    flex: 1,
   },
-  navClose: {
-    width: 32,
-    height: 32,
-    borderRadius: 16,
-    backgroundColor: 'rgba(255,255,255,0.15)',
-    justifyContent: 'center',
-    alignItems: 'center',
+  navTurnDistance: {
+    color: '#fff',
+    fontSize: 34,
+    lineHeight: 38,
+    fontWeight: '900',
+    fontVariant: ['tabular-nums'],
   },
-  navReroute: {
+  navTurnInstruction: {
+    color: '#fff',
+    fontSize: 15,
+    fontWeight: '800',
+  },
+  navNextRow: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: 8,
-    paddingHorizontal: 16,
-    paddingBottom: 10,
+    paddingHorizontal: 14,
+    paddingVertical: 9,
+    backgroundColor: '#09479A',
   },
-  navRerouteText: {
+  navNextArrow: {
+    width: 28,
+    color: '#fff',
+    fontSize: 20,
+    textAlign: 'center',
+  },
+  navNextText: {
+    flex: 1,
+    color: '#DCEBFF',
     fontSize: 13,
-    color: '#aaa',
+    fontWeight: '700',
+  },
+  navStatusStack: {
+    position: 'absolute',
+    left: 16,
+    gap: 10,
+  },
+  navSpeedBadge: {
+    width: 66,
+    height: 66,
+    borderRadius: 16,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: 'rgba(10,10,10,0.78)',
+  },
+  navSpeedValue: {
+    color: '#fff',
+    fontSize: 31,
+    lineHeight: 34,
+    fontWeight: '900',
+    fontVariant: ['tabular-nums'],
+  },
+  navSpeedUnit: {
+    color: '#D6D6D6',
+    fontSize: 10,
+    fontWeight: '700',
+  },
+  navObstacleBadge: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 4,
+    minWidth: 66,
+    paddingHorizontal: 8,
+    paddingVertical: 8,
+    borderRadius: 14,
+    backgroundColor: 'rgba(255,255,255,0.92)',
+  },
+  navObstacleText: {
+    color: '#FF5722',
+    fontSize: 13,
+    fontWeight: '900',
+  },
+  navRightStack: {
+    position: 'absolute',
+    right: 14,
+    gap: 10,
+  },
+  navRoundBtn: {
+    width: 48,
+    height: 48,
+    borderRadius: 24,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: 'rgba(18,18,18,0.82)',
+    borderWidth: 1,
+    borderColor: 'rgba(255,255,255,0.16)',
+  },
+  navToast: {
+    position: 'absolute',
+    left: 28,
+    right: 28,
+    bottom: 108,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 10,
+    paddingVertical: 13,
+    borderRadius: 8,
+    backgroundColor: 'rgba(0,0,0,0.82)',
+  },
+  navToastText: {
+    color: '#fff',
+    fontSize: 14,
+    fontWeight: '700',
+  },
+  navBottomBar: {
+    position: 'absolute',
+    left: 12,
+    right: 12,
+    bottom: 0,
+    minHeight: 86,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+    paddingHorizontal: 16,
+    paddingTop: 12,
+    borderTopLeftRadius: 16,
+    borderTopRightRadius: 16,
+    backgroundColor: 'rgba(15,15,18,0.94)',
+  },
+  navBottomMeta: {
+    flex: 1,
+  },
+  navBottomLabel: {
+    color: '#7DB5FF',
+    fontSize: 12,
+    fontWeight: '800',
+  },
+  navBottomTitle: {
+    color: '#fff',
+    fontSize: 16,
+    fontWeight: '900',
+    marginTop: 2,
+  },
+  navBottomSub: {
+    color: '#D8D8D8',
+    fontSize: 14,
+    fontWeight: '800',
+    marginTop: 2,
+    fontVariant: ['tabular-nums'],
+  },
+  navMenuBtn: {
+    width: 56,
+    height: 56,
+    borderRadius: 16,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: '#2A2A2E',
+  },
+  navMenuText: {
+    color: '#fff',
+    fontSize: 10,
+    fontWeight: '800',
+    marginTop: 1,
   },
 
   slopeToggleActive: {

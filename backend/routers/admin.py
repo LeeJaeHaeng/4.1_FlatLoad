@@ -8,6 +8,7 @@ from sqlalchemy import select, func, delete, update
 from db.database import get_db
 from db.models import Obstacle, Vote, Post, PostLike, Comment, CertifiedUser, DeleteNotification, AppSetting
 from db.schemas import CertifiedUserCreate, CertifiedUserUpdate
+from services import storage
 
 router = APIRouter(prefix="/admin", tags=["admin"])
 
@@ -23,7 +24,7 @@ def _obs_dict(row: Obstacle) -> dict:
             pass
     return {
         "id": row.id,
-        "photoUrl": row.photo_url,
+        "photoUrl": storage.public_image_url(row.photo_url),
         "latitude": row.latitude,
         "longitude": row.longitude,
         "createdAt": row.created_at.isoformat() if row.created_at else None,

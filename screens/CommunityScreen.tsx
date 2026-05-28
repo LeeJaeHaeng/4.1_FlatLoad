@@ -102,7 +102,7 @@ function CommentItem({
   onDelete: () => void;
 }) {
   const name = comment.displayName || comment.userEmail.split('@')[0] || '익명';
-  const isMine = currentUserId && comment.userId === currentUserId;
+  const isMine = Boolean(currentUserId && comment.userId === currentUserId);
   const isCertified = (comment as any).isCertified;
 
   return (
