@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import {
   StyleSheet, View, Text, TouchableOpacity, ActivityIndicator,
-  Modal, Image, Alert, ScrollView, TextInput, FlatList, Keyboard,
+  Modal, Image, Alert, ScrollView, TextInput, FlatList, Keyboard, Platform,
 } from 'react-native';
 import { WebView } from 'react-native-webview';
 import { MaterialIcons } from '@expo/vector-icons';
@@ -162,10 +162,16 @@ function buildMapHTML(lat: number, lng: number): string {
 <head>
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
   <script>
-    function reportMapError(message) {
-      if (window.ReactNativeWebView) {
-        window.ReactNativeWebView.postMessage(JSON.stringify({ type: 'mapError', message: message }));
+    function postToApp(payload) {
+      var message = typeof payload === 'string' ? payload : JSON.stringify(payload);
+      if (window.ReactNativeWebView && typeof window.ReactNativeWebView.postMessage === 'function') {
+        window.ReactNativeWebView.postMessage(message);
+      } else if (window.parent && window.parent !== window) {
+        window.parent.postMessage(message, '*');
       }
+    }
+    function reportMapError(message) {
+      postToApp({ type: 'mapError', message: message });
     }
     window.onerror = function(message, source, lineno, colno, error) {
       reportMapError(error && error.message ? error.message : String(message || '지도 스크립트 오류'));
@@ -226,7 +232,7 @@ function buildMapHTML(lat: number, lng: number): string {
       if (readySent) return;
       readySent = true;
       clearTimeout(readyTimer);
-      window.ReactNativeWebView.postMessage(JSON.stringify({ type: 'mapReady' }));
+      postToApp({ type: 'mapReady' });
     }
 
     function buildLocationSVG(heading, showHeading) {
@@ -310,14 +316,14 @@ function buildMapHTML(lat: number, lng: number): string {
     function onObstacleClick(id) {
       var d = obstacleData[id];
       if (!d) return;
-      window.ReactNativeWebView.postMessage(JSON.stringify({
+      postToApp({
         type: 'obstacleClick',
         id: id,
         lat: d.lat,
         lng: d.lng,
         photoUri: d.photoUri,
         createdAt: d.createdAt
-      }));
+      });
     }
 
     function addObstacleMarker(id, lat, lng, photoUri, createdAt, count) {
@@ -431,6 +437,7 @@ function buildMapHTML(lat: number, lng: number): string {
 
     function handleMessage(data) {
       try {
+        if (typeof data !== 'string') data = JSON.stringify(data);
         var msg = JSON.parse(data);
         if (msg.type === 'updateLocation') {
           updateLocation(msg.lat, msg.lng, msg.accuracy);
@@ -438,6 +445,8 @@ function buildMapHTML(lat: number, lng: number): string {
           updateHeading(msg.heading);
         } else if (msg.type === 'flyTo') {
           flyToLocation(msg.lat, msg.lng);
+        } else if (msg.type === 'setNavigationMode') {
+          setNavigationMode(msg.active);
         } else if (msg.type === 'setObstacles') {
           clearObstacleMarkers();
           msg.obstacles.forEach(function(o) {
@@ -505,6 +514,55 @@ export default function MapScreen({ navigation }: any) {
   const groupMapRef = useRef<Record<number, number[]>>({});
   const [voteState, setVoteState] = useState<{ likes: number; dislikes: number; userVote: 'like' | 'dislike' | null } | null>(null);
   const webViewRef = useRef<WebView>(null);
+  const webFrameRef = useRef<any>(null);
+  const mapHtmlRef = useRef('');
+  const mapHtmlKeyRef = useRef(-1);
+
+  const postMapMessage = useCallback((payload: Record<string, any>) => {
+    const message = JSON.stringify(payload);
+    if (Platform.OS === 'web') {
+      webFrameRef.current?.contentWindow?.postMessage(message, '*');
+      return;
+    }
+    webViewRef.current?.injectJavaScript(`handleMessage(${JSON.stringify(message)}); true;`);
+  }, []);
+
+  const handleMapMessageData = useCallback((data: unknown) => {
+    try {
+      const msg = typeof data === 'string' ? JSON.parse(data) : data as any;
+      if (!msg || typeof msg !== 'object') return;
+      if (msg.type === 'mapReady') {
+        setMapReady(true);
+        setMapLoadError(null);
+      } else if (msg.type === 'mapError') {
+        setMapReady(false);
+        setMapLoadError(msg.message || '지도 초기화에 실패했습니다.');
+      } else if (msg.type === 'obstacleClick') {
+        const groupIds = groupMapRef.current[msg.id] ?? [msg.id];
+        if (groupIds.length > 1) {
+          const members = groupIds
+            .map(id => obstacles.find(o => o.id === id))
+            .filter(Boolean) as ObstacleRecord[];
+          setGroupObstacles(members);
+        } else {
+          const found = obstacles.find(o => o.id === msg.id);
+          if (found) setSelectedObstacle(found);
+        }
+      }
+    } catch {}
+  }, [obstacles]);
+
+  useEffect(() => {
+    if (Platform.OS !== 'web') return;
+    const win = globalThis as any;
+    const listener = (event: any) => {
+      const iframeWindow = webFrameRef.current?.contentWindow;
+      if (iframeWindow && event.source && event.source !== iframeWindow) return;
+      handleMapMessageData(event.data);
+    };
+    win.addEventListener?.('message', listener);
+    return () => win.removeEventListener?.('message', listener);
+  }, [handleMapMessageData]);
 
   // 상보 필터 상태 refs
   const cfHeadingRef    = useRef<number | null>(null);
@@ -623,11 +681,9 @@ export default function MapScreen({ navigation }: any) {
       }
 
       // 내비 중 지도 사용자 중심 유지
-      webViewRef.current?.injectJavaScript(
-        `flyToLocation(${userLat}, ${userLng}); true;`
-      );
+      postMapMessage({ type: 'flyTo', lat: userLat, lng: userLng });
     };
-  }, [isNavigating, routePoints, maneuvers, isRerouting, destCoords]);
+  }, [isNavigating, routePoints, maneuvers, isRerouting, destCoords, postMapMessage]);
 
   const searchDestination = async () => {
     if (!searchQuery.trim()) return;
@@ -756,9 +812,7 @@ export default function MapScreen({ navigation }: any) {
           : `${Math.ceil(durSec / 60)}분`;
         const nearObstacles = countObstaclesNearRoute(latlngs);
         setRouteInfo({ distance: distStr, duration: durStr, mode, obstacleCount: nearObstacles });
-        webViewRef.current?.injectJavaScript(
-          `drawRoute(${JSON.stringify(geoCoords)}, '#4285F4'); true;`
-        );
+        postMapMessage({ type: 'drawRoute', coords: geoCoords, color: '#4285F4' });
 
         let parsedManeuvers: ManeuverStep[] = (leg.maneuvers ?? []).map((m: any) => ({
           type: m.type,
@@ -793,14 +847,18 @@ export default function MapScreen({ navigation }: any) {
         setCurrentManeuverIdx(0);
         setDistToNextTurn(parsedManeuvers[1] ? Math.round(parsedManeuvers[0].length * 1000) : 0);
 
-        webViewRef.current?.injectJavaScript(`clearManeuverMarkers(); true;`);
+        postMapMessage({ type: 'clearManeuverMarkers' });
         parsedManeuvers.slice(0, -1).forEach((step, i) => {
           if (i >= 8) return;
           const arrow = getManeuverIcon(step.type);
           const label = getManeuverLabel(step.type);
-          webViewRef.current?.injectJavaScript(
-            `addManeuverMarker(${step.lat}, ${step.lng}, '${arrow}', '${label.replace(/'/g, "\\'")}'); true;`
-          );
+          postMapMessage({
+            type: 'addManeuverMarker',
+            lat: step.lat,
+            lng: step.lng,
+            arrow,
+            distStr: label,
+          });
         });
 
         fetchSlopeWarnings(latlngs);
@@ -846,9 +904,7 @@ export default function MapScreen({ navigation }: any) {
     const latlngs: [number, number][] = route.geometry.coordinates.map(([lo, la]: number[]) => [la, lo]);
     const nearObstacles = countObstaclesNearRoute(latlngs);
     setRouteInfo({ distance: distStr, duration: durStr, mode, obstacleCount: nearObstacles });
-    webViewRef.current?.injectJavaScript(
-      `drawRoute(${JSON.stringify(route.geometry.coordinates)}, '${color}'); true;`
-    );
+    postMapMessage({ type: 'drawRoute', coords: route.geometry.coordinates, color });
     if (mode === 'safe') {
       const fallbackManeuvers: ManeuverStep[] = [
         {
@@ -896,7 +952,7 @@ export default function MapScreen({ navigation }: any) {
         const lat = el.lat ?? el.center?.lat;
         const lng = el.lon ?? el.center?.lon;
         if (lat && lng && routePts.some(([rlat, rlng]) => haversine(lat, lng, rlat, rlng) < 80)) {
-          webViewRef.current?.injectJavaScript(`addFacilityMarker(${lat}, ${lng}, 'slope'); true;`);
+          postMapMessage({ type: 'addFacilityMarker', lat, lng, facilityType: 'slope' });
         }
       });
     } catch { /* 경사 데이터 로드 실패 무시 */ }
@@ -909,7 +965,7 @@ export default function MapScreen({ navigation }: any) {
     // 이미 활성 → 마커 제거 후 비활성화
     if (activeFilters.has(filterName)) {
       setActiveFilters(prev => { const n = new Set(prev); n.delete(filterName); return n; });
-      webViewRef.current?.injectJavaScript(`clearFacilityMarkers('${cfg.facilityType}'); true;`);
+      postMapMessage({ type: 'clearFacilityMarkers', facilityType: cfg.facilityType });
       return;
     }
 
@@ -927,9 +983,7 @@ export default function MapScreen({ navigation }: any) {
         cfg.radiusM ?? 3000,
       );
       facilities.forEach(({ lat, lng, type }) => {
-        webViewRef.current?.injectJavaScript(
-          `addFacilityMarker(${lat}, ${lng}, '${type}'); true;`
-        );
+        postMapMessage({ type: 'addFacilityMarker', lat, lng, facilityType: type });
       });
       const count = facilities.length;
 
@@ -959,7 +1013,7 @@ export default function MapScreen({ navigation }: any) {
     const toLng = parseFloat(item.lon);
     setDestCoords({ lat: toLat, lng: toLng });
     setRouteInfo(null);
-    webViewRef.current?.injectJavaScript(`addDestMarker(${toLat}, ${toLng}); true;`);
+    postMapMessage({ type: 'addDestMarker', lat: toLat, lng: toLng });
     if (location) {
       await fetchRoute(location.lat, location.lng, toLat, toLng, 'safe');
     }
@@ -970,7 +1024,7 @@ export default function MapScreen({ navigation }: any) {
     setDestCoords(null);
     setRouteInfo(null);
     setSearchQuery('');
-    webViewRef.current?.injectJavaScript(`clearRoute(); true;`);
+    postMapMessage({ type: 'clearRoute' });
   };
 
   const showWip = () => Alert.alert('알림', '아직 개발중입니다.');
@@ -1128,34 +1182,27 @@ export default function MapScreen({ navigation }: any) {
 
   useEffect(() => {
     if (!mapReady || !location) return;
-    webViewRef.current?.injectJavaScript(`
-      updateLocation(${location.lat}, ${location.lng}, ${location.accuracy ?? 0});
-      true;
-    `);
+    postMapMessage({
+      type: 'updateLocation',
+      lat: location.lat,
+      lng: location.lng,
+      accuracy: location.accuracy ?? 0,
+    });
     navUpdateRef.current(location.lat, location.lng);
-  }, [location, mapReady]);
+  }, [location, mapReady, postMapMessage]);
 
   useEffect(() => {
     if (!mapReady || heading === null) return;
-    webViewRef.current?.injectJavaScript(`
-      updateHeading(${heading});
-      true;
-    `);
-  }, [heading, mapReady]);
+    postMapMessage({ type: 'updateHeading', heading });
+  }, [heading, mapReady, postMapMessage]);
 
   useEffect(() => {
     if (!mapReady) return;
-    webViewRef.current?.injectJavaScript(`
-      setNavigationMode(${isNavigating ? 'true' : 'false'});
-      true;
-    `);
+    postMapMessage({ type: 'setNavigationMode', active: isNavigating });
     if (isNavigating && location) {
-      webViewRef.current?.injectJavaScript(`
-        flyToLocation(${location.lat}, ${location.lng});
-        true;
-      `);
+      postMapMessage({ type: 'flyTo', lat: location.lat, lng: location.lng });
     }
-  }, [isNavigating, mapReady, location]);
+  }, [isNavigating, mapReady, location, postMapMessage]);
 
   useEffect(() => {
     if (!mapReady) return;
@@ -1183,22 +1230,19 @@ export default function MapScreen({ navigation }: any) {
     }
     groupMapRef.current = newGroupMap;
 
-    webViewRef.current?.injectJavaScript(`
-      (function() {
-        var obs = ${JSON.stringify(grouped.map(g => ({
-          id: g.repId,
-          latitude: g.obs.latitude,
-          longitude: g.obs.longitude,
-          photoUri: (g.obs as any).photoBase64 || g.obs.photoUri,
-          createdAt: g.obs.createdAt,
-          isCertified: (g.obs as any).isCertified ?? false,
-          count: g.count,
-        })))};
-        handleMessage(JSON.stringify({ type: 'setObstacles', obstacles: obs }));
-      })();
-      true;
-    `);
-  }, [obstacles, mapReady, obstacleFilter]);
+    postMapMessage({
+      type: 'setObstacles',
+      obstacles: grouped.map(g => ({
+        id: g.repId,
+        latitude: g.obs.latitude,
+        longitude: g.obs.longitude,
+        photoUri: (g.obs as any).photoBase64 || g.obs.photoUri,
+        createdAt: g.obs.createdAt,
+        isCertified: (g.obs as any).isCertified ?? false,
+        count: g.count,
+      })),
+    });
+  }, [obstacles, mapReady, obstacleFilter, postMapMessage]);
 
   const startNavigation = () => {
     if (!routeInfo || routeInfo.mode !== 'safe' || maneuvers.length === 0) {
@@ -1220,15 +1264,12 @@ export default function MapScreen({ navigation }: any) {
     setCurrentManeuverIdx(0);
     setDistToNextTurn(0);
     Speech.stop();
-    webViewRef.current?.injectJavaScript(`setNavigationMode(false); true;`);
+    postMapMessage({ type: 'setNavigationMode', active: false });
   };
 
   const flyToCurrentLocation = () => {
     if (!location) return;
-    webViewRef.current?.injectJavaScript(`
-      flyToLocation(${location.lat}, ${location.lng});
-      true;
-    `);
+    postMapMessage({ type: 'flyTo', lat: location.lat, lng: location.lng });
   };
 
   if (loading) {
@@ -1250,6 +1291,11 @@ export default function MapScreen({ navigation }: any) {
 
   const initLat = location?.lat ?? DEFAULT_LAT;
   const initLng = location?.lng ?? DEFAULT_LNG;
+  if (mapHtmlKeyRef.current !== mapReloadKey) {
+    mapHtmlRef.current = buildMapHTML(initLat, initLng);
+    mapHtmlKeyRef.current = mapReloadKey;
+  }
+  const mapHtml = mapHtmlRef.current;
   const currentStep = maneuvers[currentManeuverIdx];
   const nextStep = maneuvers[currentManeuverIdx + 1];
   const currentInstruction = currentStep?.instruction || getManeuverLabel(currentStep?.type ?? 1);
@@ -1279,43 +1325,41 @@ export default function MapScreen({ navigation }: any) {
   return (
     <View style={styles.container}>
       {/* 지도 (전체 화면) */}
-      <WebView
-        key={mapReloadKey}
-        ref={webViewRef}
-        style={StyleSheet.absoluteFill}
-        source={{ html: buildMapHTML(initLat, initLng), baseUrl: 'http://localhost' }}
-        originWhitelist={['*']}
-        javaScriptEnabled
-        domStorageEnabled
-        onLoadStart={() => {
-          setMapReady(false);
-          setMapLoadError(null);
-        }}
-        onError={() => setMapLoadError('지도를 불러오는 데 실패했습니다.')}
-        onMessage={(e) => {
-          try {
-            const msg = JSON.parse(e.nativeEvent.data);
-            if (msg.type === 'mapReady') {
-              setMapReady(true);
-              setMapLoadError(null);
-            } else if (msg.type === 'mapError') {
-              setMapReady(false);
-              setMapLoadError(msg.message || '지도 초기화에 실패했습니다.');
-            } else if (msg.type === 'obstacleClick') {
-              const groupIds = groupMapRef.current[msg.id] ?? [msg.id];
-              if (groupIds.length > 1) {
-                const members = groupIds
-                  .map(id => obstacles.find(o => o.id === id))
-                  .filter(Boolean) as ObstacleRecord[];
-                setGroupObstacles(members);
-              } else {
-                const found = obstacles.find(o => o.id === msg.id);
-                if (found) setSelectedObstacle(found);
-              }
-            }
-          } catch {}
-        }}
-      />
+      {Platform.OS === 'web' ? (
+        React.createElement('iframe' as any, {
+          key: mapReloadKey,
+          ref: webFrameRef,
+          srcDoc: mapHtml,
+          title: 'Kakao map',
+          style: {
+            position: 'absolute',
+            top: 0,
+            right: 0,
+            bottom: 0,
+            left: 0,
+            width: '100%',
+            height: '100%',
+            border: 0,
+          },
+          onLoad: () => setMapLoadError(null),
+        })
+      ) : (
+        <WebView
+          key={mapReloadKey}
+          ref={webViewRef}
+          style={StyleSheet.absoluteFill}
+          source={{ html: mapHtml, baseUrl: 'http://localhost' }}
+          originWhitelist={['*']}
+          javaScriptEnabled
+          domStorageEnabled
+          onLoadStart={() => {
+            setMapReady(false);
+            setMapLoadError(null);
+          }}
+          onError={() => setMapLoadError('지도를 불러오는 데 실패했습니다.')}
+          onMessage={(e) => handleMapMessageData(e.nativeEvent.data)}
+        />
+      )}
 
       {!mapReady || mapLoadError ? (
         <View pointerEvents={mapLoadError ? 'auto' : 'none'} style={styles.mapStatusOverlay}>
