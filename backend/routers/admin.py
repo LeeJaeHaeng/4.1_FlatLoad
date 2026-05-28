@@ -1,17 +1,63 @@
 import json
 import secrets
+import hashlib
+import hmac
+import os
 from datetime import datetime, timedelta, timezone
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, func, delete, update
 from db.database import get_db
-from db.models import Obstacle, Vote, Post, PostLike, Comment, CertifiedUser, DeleteNotification, AppSetting
+from db.models import AdminUser, Obstacle, Vote, Post, PostLike, Comment, CertifiedUser, DeleteNotification, AppSetting
 from db.schemas import CertifiedUserCreate, CertifiedUserUpdate
 from services import storage
 
 router = APIRouter(prefix="/admin", tags=["admin"])
 
 UPLOADS_DIR = storage.UPLOADS_DIR
+
+
+def _hash_password(password: str, salt: str | None = None) -> str:
+    salt = salt or secrets.token_hex(16)
+    digest = hashlib.pbkdf2_hmac("sha256", password.encode("utf-8"), salt.encode("utf-8"), 120000)
+    return f"pbkdf2_sha256$120000${salt}${digest.hex()}"
+
+
+def _verify_password(password: str, password_hash: str) -> bool:
+    try:
+        algorithm, iterations, salt, expected = password_hash.split("$", 3)
+        if algorithm != "pbkdf2_sha256":
+            return False
+        digest = hashlib.pbkdf2_hmac("sha256", password.encode("utf-8"), salt.encode("utf-8"), int(iterations))
+        return hmac.compare_digest(digest.hex(), expected)
+    except Exception:
+        return False
+
+
+@router.post("/auth/login")
+async def verify_admin_login(body: dict, db: AsyncSession = Depends(get_db)):
+    username = str(body.get("id") or body.get("username") or "").strip()
+    password = str(body.get("pw") or body.get("password") or "")
+    if not username or not password:
+        raise HTTPException(401, "아이디 또는 비밀번호가 올바르지 않습니다")
+
+    row = (await db.execute(select(AdminUser).where(AdminUser.username == username))).scalar_one_or_none()
+    if not row or not _verify_password(password, row.password_hash):
+        raise HTTPException(401, "아이디 또는 비밀번호가 올바르지 않습니다")
+    return {"ok": True}
+
+
+@router.post("/auth/bootstrap")
+async def bootstrap_admin_user(db: AsyncSession = Depends(get_db)):
+    username = os.getenv("ADMIN_ID", "root")
+    password = os.getenv("ADMIN_PW", "1234")
+    row = (await db.execute(select(AdminUser).where(AdminUser.username == username))).scalar_one_or_none()
+    if row:
+        row.password_hash = _hash_password(password)
+    else:
+        db.add(AdminUser(username=username, password_hash=_hash_password(password)))
+    await db.commit()
+    return {"ok": True, "username": username}
 
 
 def _obs_dict(row: Obstacle) -> dict:

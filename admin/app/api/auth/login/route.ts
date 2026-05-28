@@ -9,7 +9,7 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: "잘못된 요청입니다." }, { status: 400 });
   }
 
-  if (!validateCredentials(body.id ?? "", body.pw ?? "")) {
+  if (!(await validateCredentials(body.id ?? "", body.pw ?? ""))) {
     return NextResponse.json(
       { error: "아이디 또는 비밀번호가 올바르지 않습니다." },
       { status: 401 }

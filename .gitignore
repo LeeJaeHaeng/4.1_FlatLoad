@@ -5,6 +5,7 @@ node_modules/
 
 # Expo
 .expo/
+.vercel/
 dist/
 web-build/
 expo-env.d.ts
@@ -67,3 +68,5 @@ backend/uploads/
 # generated native folders
 /ios
 /android
+
+.vercel

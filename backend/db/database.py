@@ -21,7 +21,7 @@ DATABASE_URL = _normalize_database_url(
     os.getenv("DATABASE_URL", "postgresql+asyncpg://postgres:postgres@localhost:5432/flatroad")
 )
 IS_SQLITE = DATABASE_URL.startswith("sqlite+aiosqlite:")
-IS_SUPABASE = "supabase.co" in DATABASE_URL
+IS_SUPABASE = "supabase.co" in DATABASE_URL or "supabase.com" in DATABASE_URL
 USE_NULL_POOL = os.getenv("DB_USE_NULL_POOL", "").lower() in {"1", "true", "yes"} or IS_SUPABASE
 DISABLE_STATEMENT_CACHE = (
     os.getenv("DB_DISABLE_STATEMENT_CACHE", "").lower() in {"1", "true", "yes"}
@@ -35,8 +35,9 @@ else:
     engine_options = {"echo": False}
     connect_args = {}
     if IS_SUPABASE:
-        connect_args["ssl"] = True
+        connect_args["ssl"] = "require"
     if DISABLE_STATEMENT_CACHE:
+        connect_args["prepared_statement_cache_size"] = 0
         connect_args["statement_cache_size"] = 0
     if connect_args:
         engine_options["connect_args"] = connect_args

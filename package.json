@@ -4,6 +4,7 @@
   "main": "index.ts",
   "scripts": {
     "start": "expo start",
+    "build:web": "expo export --platform web",
     "android": "expo run:android",
     "ios": "expo run:ios",
     "test:unit": "tsc scripts/test-detection-overlay.ts utils/detectionOverlay.ts --module commonjs --target ES2020 --outDir .tmp-tests --skipLibCheck && node .tmp-tests/scripts/test-detection-overlay.js"
@@ -27,9 +28,11 @@
     "expo-web-browser": "~15.0.11",
     "firebase": "^10.14.1",
     "react": "19.1.0",
+    "react-dom": "19.1.0",
     "react-native": "0.81.5",
     "react-native-safe-area-context": "~5.6.0",
     "react-native-screens": "~4.16.0",
+    "react-native-web": "^0.21.0",
     "react-native-webview": "13.15.0"
   },
   "devDependencies": {
