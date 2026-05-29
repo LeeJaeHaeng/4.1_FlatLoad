@@ -303,6 +303,28 @@ export async function apiGetRouteFacilities(
   return res.json();
 }
 
+export async function apiGetSlopeWarnings(
+  routePoints: [number, number][],
+): Promise<{ lat: number; lng: number }[]> {
+  const points = routePoints
+    .filter(([lat, lng]) => Number.isFinite(lat) && Number.isFinite(lng))
+    .slice(0, 500);
+  if (!points.length) return [];
+
+  try {
+    const res = await apiFetch(`${API_BASE_URL}/api/route/slope-warnings`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ points }),
+    }, 25000);
+    if (!res.ok) return [];
+    const data = await res.json();
+    return Array.isArray(data.warnings) ? data.warnings : [];
+  } catch {
+    return [];
+  }
+}
+
 // ── AI 분석 ───────────────────────────────────────────────────────
 
 export async function apiAnalyzeImage(photoUri: string): Promise<{

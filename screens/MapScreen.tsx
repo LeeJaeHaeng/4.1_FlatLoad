@@ -17,6 +17,7 @@ import {
   apiGetUserVote,
   apiGetAvoidLocations,
   apiGetRouteFacilities,
+  apiGetSlopeWarnings,
   DeleteNotification,
   RouteFacilityType,
 } from '../utils/api';
@@ -949,24 +950,12 @@ export default function MapScreen({ navigation }: any) {
 
   const fetchSlopeWarnings = async (routePts: [number, number][]) => {
     if (!routePts.length) return;
-    const lats = routePts.map(p => p[0]);
-    const lngs = routePts.map(p => p[1]);
-    const bbox = `${Math.min(...lats) - 0.001},${Math.min(...lngs) - 0.001},${Math.max(...lats) + 0.001},${Math.max(...lngs) + 0.001}`;
-    try {
-      const query = `[out:json][timeout:15];(node["highway"="steps"](${bbox});way["highway"="steps"](${bbox});node["incline"~"steep"](${bbox});way["incline"](${bbox}););out center;`;
-      const res = await fetch('https://overpass-api.de/api/interpreter', {
-        method: 'POST',
-        body: `data=${encodeURIComponent(query)}`,
-      });
-      const data = await res.json();
-      (data.elements ?? []).slice(0, 30).forEach((el: any) => {
-        const lat = el.lat ?? el.center?.lat;
-        const lng = el.lon ?? el.center?.lon;
-        if (lat && lng && routePts.some(([rlat, rlng]) => haversine(lat, lng, rlat, rlng) < 80)) {
-          postMapMessage({ type: 'addFacilityMarker', lat, lng, facilityType: 'slope' });
-        }
-      });
-    } catch { /* 경사 데이터 로드 실패 무시 */ }
+    const warnings = await apiGetSlopeWarnings(routePts);
+    warnings.forEach(({ lat, lng }) => {
+      if (routePts.some(([rlat, rlng]) => haversine(lat, lng, rlat, rlng) < 80)) {
+        postMapMessage({ type: 'addFacilityMarker', lat, lng, facilityType: 'slope' });
+      }
+    });
   };
 
   const toggleFilter = async (filterName: string) => {
@@ -1083,67 +1072,69 @@ export default function MapScreen({ navigation }: any) {
         }
       );
 
-      try {
-        Accelerometer.setUpdateInterval(20);
-        Magnetometer.setUpdateInterval(20);
-        Gyroscope.setUpdateInterval(16);
+      if (Platform.OS !== 'web') {
+        try {
+          Accelerometer.setUpdateInterval(20);
+          Magnetometer.setUpdateInterval(20);
+          Gyroscope.setUpdateInterval(16);
 
-        const accSub = Accelerometer.addListener(data => { accDataRef.current = data; });
-        const magSub = Magnetometer.addListener(data => { magDataRef.current = data; });
-        const gyroSub = Gyroscope.addListener(({ x: gx, y: gy, z: gz }) => {
-          const now = Date.now();
-          const acc = accDataRef.current;
-          const mag = magDataRef.current;
-          if (!acc || !mag) { lastGyroTimeRef.current = now; return; }
+          const accSub = Accelerometer.addListener(data => { accDataRef.current = data; });
+          const magSub = Magnetometer.addListener(data => { magDataRef.current = data; });
+          const gyroSub = Gyroscope.addListener(({ x: gx, y: gy, z: gz }) => {
+            const now = Date.now();
+            const acc = accDataRef.current;
+            const mag = magDataRef.current;
+            if (!acc || !mag) { lastGyroTimeRef.current = now; return; }
 
-          const dt = lastGyroTimeRef.current > 0
-            ? (now - lastGyroTimeRef.current) / 1000
-            : 0.016;
-          lastGyroTimeRef.current = now;
+            const dt = lastGyroTimeRef.current > 0
+              ? (now - lastGyroTimeRef.current) / 1000
+              : 0.016;
+            lastGyroTimeRef.current = now;
 
-          // 가속도계 정규화 (중력 방향 단위벡터)
-          const { x: ax, y: ay, z: az } = acc;
-          const { x: mx, y: my, z: mz } = mag;
-          const accNorm = Math.sqrt(ax * ax + ay * ay + az * az);
-          if (accNorm < 0.1) return;
-          const axn = ax / accNorm, ayn = ay / accNorm, azn = az / accNorm;
+            // 가속도계 정규화 (중력 방향 단위벡터)
+            const { x: ax, y: ay, z: az } = acc;
+            const { x: mx, y: my, z: mz } = mag;
+            const accNorm = Math.sqrt(ax * ax + ay * ay + az * az);
+            if (accNorm < 0.1) return;
+            const axn = ax / accNorm, ayn = ay / accNorm, azn = az / accNorm;
 
-          // 자이로 벡터를 중력 방향에 투영해 yaw 성분만 추출 (기기 기울기 무관)
-          const yawRate = -(gx * axn + gy * ayn + gz * azn);
-          const gyroDeg = yawRate * dt * (180 / Math.PI);
+            // 자이로 벡터를 중력 방향에 투영해 yaw 성분만 추출 (기기 기울기 무관)
+            const yawRate = -(gx * axn + gy * ayn + gz * azn);
+            const gyroDeg = yawRate * dt * (180 / Math.PI);
 
-          // 틸트 보정 지자기 절대 방위
-          const pitch = Math.atan2(-axn, Math.sqrt(ayn * ayn + azn * azn));
-          const roll  = Math.atan2(ayn, azn);
-          const Xh = mx * Math.cos(pitch) + mz * Math.sin(pitch);
-          const Yh = mx * Math.sin(roll) * Math.sin(pitch)
-                   + my * Math.cos(roll)
-                   - mz * Math.sin(roll) * Math.cos(pitch);
-          let magDeg = Math.atan2(-Yh, Xh) * (180 / Math.PI);
-          magDeg = ((magDeg % 360) + 360) % 360;
+            // 틸트 보정 지자기 절대 방위
+            const pitch = Math.atan2(-axn, Math.sqrt(ayn * ayn + azn * azn));
+            const roll  = Math.atan2(ayn, azn);
+            const Xh = mx * Math.cos(pitch) + mz * Math.sin(pitch);
+            const Yh = mx * Math.sin(roll) * Math.sin(pitch)
+                     + my * Math.cos(roll)
+                     - mz * Math.sin(roll) * Math.cos(pitch);
+            let magDeg = Math.atan2(-Yh, Xh) * (180 / Math.PI);
+            magDeg = ((magDeg % 360) + 360) % 360;
 
-          // 상보 필터: α=0.97 (자이로 단기 정확도 + 자기계 장기 보정)
-          const ALPHA = 0.97;
-          if (cfHeadingRef.current === null) {
-            cfHeadingRef.current = magDeg;
-          } else {
-            let gh = (cfHeadingRef.current + gyroDeg + 360) % 360;
-            let diff = magDeg - gh;
-            if (diff > 180) diff -= 360;
-            if (diff < -180) diff += 360;
-            cfHeadingRef.current = (gh + (1 - ALPHA) * diff + 360) % 360;
-          }
+            // 상보 필터: α=0.97 (자이로 단기 정확도 + 자기계 장기 보정)
+            const ALPHA = 0.97;
+            if (cfHeadingRef.current === null) {
+              cfHeadingRef.current = magDeg;
+            } else {
+              let gh = (cfHeadingRef.current + gyroDeg + 360) % 360;
+              let diff = magDeg - gh;
+              if (diff > 180) diff -= 360;
+              if (diff < -180) diff += 360;
+              cfHeadingRef.current = (gh + (1 - ALPHA) * diff + 360) % 360;
+            }
 
-          // 15Hz(67ms)로 throttle해서 상태 업데이트
-          if (now - lastSendTimeRef.current >= 67) {
-            setHeading(Math.round(cfHeadingRef.current!));
-            lastSendTimeRef.current = now;
-          }
-        });
+            // 15Hz(67ms)로 throttle해서 상태 업데이트
+            if (now - lastSendTimeRef.current >= 67) {
+              setHeading(Math.round(cfHeadingRef.current!));
+              lastSendTimeRef.current = now;
+            }
+          });
 
-        sensorSubsRef.current = { acc: accSub, mag: magSub, gyro: gyroSub };
-      } catch {
-        // 센서 미지원 기기에서는 방향 표시 없이 동작
+          sensorSubsRef.current = { acc: accSub, mag: magSub, gyro: gyroSub };
+        } catch {
+          // 센서 미지원 기기에서는 방향 표시 없이 동작
+        }
       }
     })();
 

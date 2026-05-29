@@ -61,6 +61,10 @@ class AvoidLocationsRequest(BaseModel):
     to_lng: float
 
 
+class SlopeWarningsRequest(BaseModel):
+    points: list[list[float]]
+
+
 def _service_key() -> str:
     return (
         os.getenv("DISABLED_FACILITY_SERVICE_KEY")
@@ -574,6 +578,64 @@ async def _get_overpass_ramp_fallback(
     return sorted(results, key=lambda item: item["distance"])[:FACILITY_MAX_RESULTS]
 
 
+async def _get_overpass_slope_warnings(
+    client: httpx.AsyncClient,
+    route_points: list[tuple[float, float]],
+) -> list[dict]:
+    if not route_points:
+        return []
+
+    lats = [point[0] for point in route_points]
+    lngs = [point[1] for point in route_points]
+    bbox = (
+        f"{min(lats) - 0.001},{min(lngs) - 0.001},"
+        f"{max(lats) + 0.001},{max(lngs) + 0.001}"
+    )
+    query = (
+        f"[out:json][timeout:15];"
+        f"(node[\"highway\"=\"steps\"]({bbox});"
+        f"way[\"highway\"=\"steps\"]({bbox});"
+        f"node[\"incline\"~\"steep\"]({bbox});"
+        f"way[\"incline\"]({bbox}););"
+        f"out center;"
+    )
+
+    try:
+        res = await client.post(
+            "https://overpass-api.de/api/interpreter",
+            data={"data": query},
+            headers={"Content-Type": "application/x-www-form-urlencoded"},
+        )
+        res.raise_for_status()
+        elements = res.json().get("elements", [])
+    except Exception:
+        return []
+
+    warnings: list[dict] = []
+    seen = set()
+    for el in elements:
+        item_lat = el.get("lat") or (el.get("center") or {}).get("lat")
+        item_lng = el.get("lon") or (el.get("center") or {}).get("lon")
+        if item_lat is None or item_lng is None:
+            continue
+        try:
+            item_lat = float(item_lat)
+            item_lng = float(item_lng)
+        except (TypeError, ValueError):
+            continue
+        if not any(_distance_m(item_lat, item_lng, rlat, rlng) < 80 for rlat, rlng in route_points):
+            continue
+        key = (round(item_lat, 5), round(item_lng, 5))
+        if key in seen:
+            continue
+        seen.add(key)
+        warnings.append({"lat": item_lat, "lng": item_lng})
+        if len(warnings) >= FACILITY_MAX_RESULTS:
+            break
+
+    return warnings
+
+
 @router.get("/facilities")
 async def get_facilities(lat: float, lng: float, radius_m: int = 3000, types: str = "ramp,elevator,toilet,charger"):
     """장애인 편의시설 공공 API와 전동휠체어 충전기 CSV를 지도용 필드로 전처리."""
@@ -657,6 +719,27 @@ async def get_facilities(lat: float, lng: float, radius_m: int = 3000, types: st
             results.extend(await _get_kakao_facility_fallback(client, lat, lng, radius_m, missing_types))
 
     return sorted(results, key=lambda item: item["distance"])[:FACILITY_MAX_RESULTS]
+
+
+@router.post("/slope-warnings")
+async def get_slope_warnings(req: SlopeWarningsRequest):
+    """경로 주변 계단·급경사 후보를 서버에서 Overpass로 조회해 웹 CORS 문제를 피한다."""
+    route_points: list[tuple[float, float]] = []
+    for point in req.points[:500]:
+        if len(point) < 2:
+            continue
+        try:
+            lat = float(point[0])
+            lng = float(point[1])
+        except (TypeError, ValueError):
+            continue
+        if -90 <= lat <= 90 and -180 <= lng <= 180:
+            route_points.append((lat, lng))
+
+    timeout = httpx.Timeout(20.0, connect=5.0)
+    async with httpx.AsyncClient(timeout=timeout) as client:
+        warnings = await _get_overpass_slope_warnings(client, route_points)
+    return {"warnings": warnings}
 
 
 @router.get("/ramps")
