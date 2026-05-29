@@ -130,12 +130,17 @@ async def create_obstacle(
     await db.commit()
     await db.refresh(obs)
 
-    obs.photo_url = f"/api/obstacles/{obs.id}/photo"
-    db.add(ObstaclePhoto(
-        obstacle_id=obs.id,
-        content_type=photo.content_type or "image/jpeg",
-        image_bytes=image_bytes,
-    ))
+    content_type = photo.content_type or "image/jpeg"
+    photo_url = await storage.upload_image(image_bytes, content_type)
+    if photo_url:
+        obs.photo_url = photo_url
+    else:
+        obs.photo_url = f"/api/obstacles/{obs.id}/photo"
+        db.add(ObstaclePhoto(
+            obstacle_id=obs.id,
+            content_type=content_type,
+            image_bytes=image_bytes,
+        ))
     await db.commit()
     await db.refresh(obs)
     return _to_out(obs)

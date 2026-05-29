@@ -14,9 +14,6 @@ from services import storage
 
 router = APIRouter(prefix="/admin", tags=["admin"])
 
-UPLOADS_DIR = storage.UPLOADS_DIR
-
-
 def _hash_password(password: str, salt: str | None = None) -> str:
     salt = salt or secrets.token_hex(16)
     digest = hashlib.pbkdf2_hmac("sha256", password.encode("utf-8"), salt.encode("utf-8"), 120000)
@@ -138,11 +135,7 @@ async def delete_obstacle(obstacle_id: int, reason: str = "", db: AsyncSession =
         )
         db.add(notif)
 
-    if obs.photo_url and "/uploads/" in obs.photo_url:
-        filename = obs.photo_url.split("/uploads/")[-1]
-        file_path = UPLOADS_DIR / filename
-        if file_path.exists():
-            file_path.unlink()
+    await storage.delete_image(obs.photo_url)
 
     await db.execute(delete(Vote).where(Vote.obstacle_id == obstacle_id))
     await db.execute(delete(ObstaclePhoto).where(ObstaclePhoto.obstacle_id == obstacle_id))
