@@ -40,6 +40,7 @@ import {
 } from '../utils/api';
 import { useAuth } from '../context/AuthContext';
 import { getDetectionOverlayLayout } from '../utils/detectionOverlay';
+import exifr from 'exifr';
 
 type Screen = 'list' | 'camera' | 'preview';
 
@@ -224,27 +225,64 @@ export default function ContributeScreen() {
     if (result.canceled) return;
 
     const asset = result.assets[0];
+
+    if (Platform.OS === 'web') {
+      // 웹에서는 expo-image-picker가 EXIF를 제공하지 않으므로 exifr로 직접 파싱
+      let gps: { latitude: number; longitude: number } | null = null;
+      let dateTags: { DateTimeOriginal?: Date; DateTime?: Date } | null = null;
+      try {
+        const res = await fetch(asset.uri);
+        const blob = await res.blob();
+        [gps, dateTags] = await Promise.all([
+          exifr.gps(blob).catch(() => null),
+          exifr.parse(blob, { pick: ['DateTimeOriginal', 'DateTime'] }).catch(() => null),
+        ]);
+      } catch {
+        gps = null;
+        dateTags = null;
+      }
+
+      if (!dateTags) {
+        Alert.alert('업로드 불가', 'EXIF 데이터가 없는 사진입니다.\n카메라 앱으로 직접 촬영한 사진을 사용해주세요.');
+        return;
+      }
+
+      const takenAt: Date | undefined = dateTags.DateTimeOriginal ?? dateTags.DateTime;
+      if (!takenAt) {
+        Alert.alert('업로드 불가', '사진에 촬영 날짜 정보가 없습니다.\n카메라 앱으로 직접 촬영한 사진을 사용해주세요.');
+        return;
+      }
+
+      const diffHours = (Date.now() - takenAt.getTime()) / (1000 * 60 * 60);
+      if (diffHours > 48) {
+        Alert.alert(
+          '업로드 불가',
+          `촬영된 지 48시간이 지난 사진입니다.\n\n촬영 시각: ${takenAt.toLocaleString('ko-KR')}\n\n최근 48시간 이내에 촬영한 사진만 업로드할 수 있습니다.`
+        );
+        return;
+      }
+
+      if (!gps) {
+        Alert.alert('업로드 불가', '사진에 위치 정보(GPS)가 없습니다.\n카메라 설정에서 위치 태그를 켜고 다시 촬영해주세요.');
+        return;
+      }
+
+      setExifCoords({ latitude: gps.latitude, longitude: gps.longitude });
+      setCapturedUri(asset.uri);
+      setScreen('preview');
+      return;
+    }
+
+    // 모바일: expo-image-picker 내장 EXIF 사용
     const exif = asset.exif as Record<string, any> | undefined;
 
     if (!exif) {
-      if (Platform.OS === 'web') {
-        setExifCoords(null);
-        setCapturedUri(asset.uri);
-        setScreen('preview');
-        return;
-      }
       Alert.alert('업로드 불가', 'EXIF 데이터가 없는 사진입니다.\n카메라 앱으로 직접 촬영한 사진을 사용해주세요.');
       return;
     }
 
     const rawDate = exif.DateTimeOriginal ?? exif.DateTime;
     if (!rawDate) {
-      if (Platform.OS === 'web') {
-        setExifCoords(null);
-        setCapturedUri(asset.uri);
-        setScreen('preview');
-        return;
-      }
       Alert.alert('업로드 불가', '사진에 촬영 날짜 정보가 없습니다.\n카메라 앱으로 직접 촬영한 사진을 사용해주세요.');
       return;
     }
@@ -263,12 +301,6 @@ export default function ContributeScreen() {
     }
 
     if (exif.GPSLatitude == null || exif.GPSLongitude == null) {
-      if (Platform.OS === 'web') {
-        setExifCoords(null);
-        setCapturedUri(asset.uri);
-        setScreen('preview');
-        return;
-      }
       Alert.alert('업로드 불가', '사진에 위치 정보(GPS)가 없습니다.\n카메라 설정에서 위치 태그를 켜고 다시 촬영해주세요.');
       return;
     }
