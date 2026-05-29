@@ -1,6 +1,7 @@
 import asyncio
 import uuid
 import os
+import base64
 from pathlib import Path
 from dotenv import load_dotenv
 from urllib.parse import urlparse
@@ -8,17 +9,29 @@ from urllib.parse import urlparse
 load_dotenv()
 
 UPLOADS_DIR = Path(os.getenv("UPLOADS_DIR", str(Path(__file__).parent.parent / "uploads")))
-UPLOADS_DIR.mkdir(exist_ok=True)
+try:
+    UPLOADS_DIR.mkdir(parents=True, exist_ok=True)
+except OSError:
+    pass
 
 API_BASE_URL = os.getenv("API_BASE_URL", "http://localhost:8000")
+
+
+def _as_data_url(file_bytes: bytes, content_type: str) -> str:
+    mime = content_type if "/" in content_type else "image/jpeg"
+    encoded = base64.b64encode(file_bytes).decode("ascii")
+    return f"data:{mime};base64,{encoded}"
 
 
 def _upload_sync(file_bytes: bytes, content_type: str) -> str:
     ext = "jpg" if "jpeg" in content_type or "jpg" in content_type else content_type.split("/")[-1]
     filename = f"{uuid.uuid4()}.{ext}"
     dest = UPLOADS_DIR / filename
-    dest.write_bytes(file_bytes)
-    return f"/uploads/{filename}"
+    try:
+        dest.write_bytes(file_bytes)
+        return f"/uploads/{filename}"
+    except OSError:
+        return _as_data_url(file_bytes, content_type)
 
 
 async def upload_image(file_bytes: bytes, content_type: str = "image/jpeg") -> str:
