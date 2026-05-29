@@ -1,11 +1,11 @@
 import asyncio
 import json
 from datetime import datetime, timezone
-from fastapi import APIRouter, Depends, UploadFile, File, Form, HTTPException
+from fastapi import APIRouter, Depends, UploadFile, File, Form, HTTPException, Response
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, func, update
 from db.database import get_db
-from db.models import Obstacle, Vote, CertifiedUser, DeleteNotification, AppSetting
+from db.models import Obstacle, ObstaclePhoto, Vote, CertifiedUser, DeleteNotification, AppSetting
 from db.schemas import ObstacleOut, VoteRequest, VoteOut, TopContributor
 from services import storage, detector
 
@@ -52,12 +52,17 @@ async def create_obstacle(
     display_name: str      = Form(""),
     certified_key: str     = Form(""),
     manual_label: str      = Form(""),
+    preview_ai_label: str          = Form("", alias="ai_label"),
+    preview_ai_confidence: str     = Form("", alias="ai_confidence"),
+    preview_ai_detections: str     = Form("", alias="ai_detections"),
     db: AsyncSession       = Depends(get_db),
 ):
     image_bytes = await photo.read()
 
-    # manual_label이 있으면 AI 추론 스킵 (미리보기에서 이미 분석 완료)
+    # 미리보기에서 분석한 결과가 있으면 저장 시 Roboflow를 다시 호출하지 않는다.
     async def _safe_detect() -> list:
+        if preview_ai_label.strip() or preview_ai_detections.strip():
+            return []
         if manual_label.strip():
             return []
         if not detector.MODEL_READY:
@@ -68,14 +73,24 @@ async def create_obstacle(
             print(f"[Roboflow] 분석 실패: {e}")
             return []
 
-    photo_url, detections = await asyncio.gather(
-        storage.upload_image(image_bytes, photo.content_type or "image/jpeg"),
-        _safe_detect(),
-    )
+    detections = await _safe_detect()
 
     ai_label, ai_confidence, ai_detections_json = None, None, None
+    if preview_ai_detections.strip():
+        try:
+            parsed = json.loads(preview_ai_detections)
+            if isinstance(parsed, list):
+                ai_detections_json = json.dumps(parsed, ensure_ascii=False)
+        except Exception:
+            ai_detections_json = None
     if manual_label.strip():
         ai_label = manual_label.strip()
+    elif preview_ai_label.strip():
+        ai_label = preview_ai_label.strip()
+        try:
+            ai_confidence = float(preview_ai_confidence) if preview_ai_confidence.strip() else None
+        except ValueError:
+            ai_confidence = None
     elif detections:
         top = detections[0]
         ai_label           = top["label"]
@@ -99,7 +114,7 @@ async def create_obstacle(
     is_approved = (auto_approve_setting is None or auto_approve_setting.value == "true")
 
     obs = Obstacle(
-        photo_url     = photo_url,
+        photo_url     = None,
         latitude      = latitude,
         longitude     = longitude,
         user_id       = user_id,
@@ -114,7 +129,28 @@ async def create_obstacle(
     db.add(obs)
     await db.commit()
     await db.refresh(obs)
+
+    obs.photo_url = f"/api/obstacles/{obs.id}/photo"
+    db.add(ObstaclePhoto(
+        obstacle_id=obs.id,
+        content_type=photo.content_type or "image/jpeg",
+        image_bytes=image_bytes,
+    ))
+    await db.commit()
+    await db.refresh(obs)
     return _to_out(obs)
+
+
+@router.get("/{obstacle_id}/photo")
+async def get_obstacle_photo(obstacle_id: int, db: AsyncSession = Depends(get_db)):
+    photo = await db.get(ObstaclePhoto, obstacle_id)
+    if not photo:
+        raise HTTPException(404, "사진을 찾을 수 없습니다")
+    return Response(
+        content=bytes(photo.image_bytes),
+        media_type=photo.content_type,
+        headers={"Cache-Control": "public, max-age=31536000, immutable"},
+    )
 
 
 @router.post("/{obstacle_id}/vote", response_model=VoteOut)

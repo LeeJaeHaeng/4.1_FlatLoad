@@ -8,7 +8,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, func, delete, update
 from db.database import get_db
-from db.models import AdminUser, Obstacle, Vote, Post, PostLike, Comment, CertifiedUser, DeleteNotification, AppSetting
+from db.models import AdminUser, Obstacle, ObstaclePhoto, Vote, Post, PostLike, Comment, CertifiedUser, DeleteNotification, AppSetting
 from db.schemas import CertifiedUserCreate, CertifiedUserUpdate
 from services import storage
 
@@ -145,6 +145,7 @@ async def delete_obstacle(obstacle_id: int, reason: str = "", db: AsyncSession =
             file_path.unlink()
 
     await db.execute(delete(Vote).where(Vote.obstacle_id == obstacle_id))
+    await db.execute(delete(ObstaclePhoto).where(ObstaclePhoto.obstacle_id == obstacle_id))
     await db.delete(obs)
     await db.commit()
     return {"ok": True}

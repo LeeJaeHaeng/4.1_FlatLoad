@@ -85,6 +85,16 @@ async def create_tables():
             "ALTER TABLE comments ADD COLUMN IF NOT EXISTS is_certified BOOLEAN NOT NULL DEFAULT FALSE"
         ))
         await conn.execute(text(
+            """
+            CREATE TABLE IF NOT EXISTS obstacle_photos (
+                obstacle_id INTEGER PRIMARY KEY,
+                content_type VARCHAR NOT NULL DEFAULT 'image/jpeg',
+                image_bytes BYTEA NOT NULL,
+                created_at TIMESTAMP WITH TIME ZONE DEFAULT now()
+            )
+            """
+        ))
+        await conn.execute(text(
             "CREATE TABLE IF NOT EXISTS app_settings (key VARCHAR PRIMARY KEY, value VARCHAR NOT NULL)"
         ))
         await conn.execute(text(

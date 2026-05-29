@@ -1,4 +1,4 @@
-from sqlalchemy import Column, Integer, String, Float, DateTime, Text, Boolean, UniqueConstraint, func
+from sqlalchemy import Column, Integer, String, Float, DateTime, Text, Boolean, UniqueConstraint, LargeBinary, func
 from db.database import Base
 
 class AdminUser(Base):
@@ -39,6 +39,15 @@ class Obstacle(Base):
     ai_detections = Column(Text, nullable=True)   # JSON: [{label,confidence,bbox}]
     is_approved   = Column(Boolean, nullable=False, default=True)
     is_certified  = Column(Boolean, nullable=False, default=False)
+
+
+class ObstaclePhoto(Base):
+    __tablename__ = "obstacle_photos"
+
+    obstacle_id  = Column(Integer, primary_key=True)
+    content_type = Column(String, nullable=False, default="image/jpeg")
+    image_bytes  = Column(LargeBinary, nullable=False)
+    created_at   = Column(DateTime(timezone=True), server_default=func.now())
 
 
 class DeleteNotification(Base):

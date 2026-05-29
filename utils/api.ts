@@ -62,7 +62,12 @@ export async function apiCreateObstacle(
   userEmail: string,
   displayName: string,
   certifiedKey: string = '',
-  manualLabel: string = ''
+  manualLabel: string = '',
+  previewAnalysis?: {
+    aiLabel: string | null;
+    aiConfidence: number | null;
+    aiDetections: { label: string; confidence: number; bbox: [number, number, number, number] }[];
+  },
 ): Promise<ApiObstacle> {
   const form = new FormData();
   await appendPhoto(form, 'photo', photoUri);
@@ -73,6 +78,9 @@ export async function apiCreateObstacle(
   form.append('display_name', displayName);
   if (certifiedKey) form.append('certified_key', certifiedKey);
   if (manualLabel) form.append('manual_label', manualLabel);
+  if (previewAnalysis?.aiLabel) form.append('ai_label', previewAnalysis.aiLabel);
+  if (previewAnalysis?.aiConfidence != null) form.append('ai_confidence', String(previewAnalysis.aiConfidence));
+  if (previewAnalysis?.aiDetections?.length) form.append('ai_detections', JSON.stringify(previewAnalysis.aiDetections));
 
   const res = await apiFetch(`${API_BASE_URL}/api/obstacles`, { method: 'POST', body: form }, 30000);
   if (!res.ok) throw new Error('장애물 등록 실패');

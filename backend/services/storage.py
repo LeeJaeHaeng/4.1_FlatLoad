@@ -49,6 +49,9 @@ def public_image_url(stored_url: str | None) -> str:
         return stored_url
 
     upload_path = parsed.path if parsed.path else stored_url
+    if upload_path.startswith("/api/"):
+        return f"{API_BASE_URL.rstrip('/')}{upload_path}"
+
     if not upload_path.startswith("/uploads/"):
         return stored_url
 

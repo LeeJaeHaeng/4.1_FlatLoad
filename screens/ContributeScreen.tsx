@@ -128,6 +128,11 @@ export default function ContributeScreen() {
   const [capturedUri, setCapturedUri] = useState<string | null>(null);
   const [exifCoords, setExifCoords] = useState<{ latitude: number; longitude: number } | null>(null);
   const [manualLabel, setManualLabel] = useState('');
+  const [previewAnalysis, setPreviewAnalysis] = useState<{
+    aiLabel: string | null;
+    aiConfidence: number | null;
+    aiDetections: Detection[];
+  } | null>(null);
   const [analyzing, setAnalyzing] = useState(false);
   const [saving, setSaving] = useState(false);
   const cameraRef = useRef<CameraView>(null);
@@ -290,7 +295,7 @@ export default function ContributeScreen() {
   };
 
   const handleSave = async () => {
-    if (!capturedUri) return;
+    if (!capturedUri || analyzing) return;
     setSaving(true);
     try {
       let latitude: number;
@@ -319,6 +324,14 @@ export default function ContributeScreen() {
       let aiConfidence: number | null = null;
       let aiDetections: Detection[] = [];
       let savedId: number | null = null;
+      const trimmedManualLabel = manualLabel.trim();
+      const previewLabelKo = previewAnalysis?.aiLabel ? (LABEL_KO[previewAnalysis.aiLabel] ?? previewAnalysis.aiLabel) : '';
+      const manualOverride =
+        trimmedManualLabel &&
+        trimmedManualLabel !== previewAnalysis?.aiLabel &&
+        trimmedManualLabel !== previewLabelKo
+          ? trimmedManualLabel
+          : '';
       try {
         const result = await apiCreateObstacle(
           capturedUri,
@@ -328,7 +341,8 @@ export default function ContributeScreen() {
           user?.email ?? '',
           user?.displayName ?? '',
           certKey,
-          manualLabel.trim()
+          manualOverride,
+          previewAnalysis ?? undefined
         );
         aiLabel = result.aiLabel;
         aiConfidence = result.aiConfidence;
@@ -345,19 +359,30 @@ export default function ContributeScreen() {
         );
       }
 
+      const resetPreview = () => {
+        setCapturedUri(null);
+        setExifCoords(null);
+        setManualLabel('');
+        setPreviewAnalysis(null);
+        setScreen('list');
+        loadListData();
+      };
+
       const finishSave = (finalLabel: string | null, finalConf: number | null) => {
         const labelKo = finalLabel ? (LABEL_KO[finalLabel] ?? finalLabel) : null;
         const aiMsg = labelKo
           ? `\n\n🤖 AI 감지: ${labelKo} (신뢰도 ${Math.round((finalConf ?? 0) * 100)}%)`
           : '';
+        if (Platform.OS === 'web') {
+          resetPreview();
+          const alertFn = (globalThis as any).alert;
+          if (typeof alertFn === 'function') alertFn(`저장 완료\n\n장애물 정보가 저장되었습니다.${aiMsg}`);
+          return;
+        }
         Alert.alert('저장 완료', `장애물 정보가 저장되었습니다.${aiMsg}`, [
           {
             text: '확인',
-            onPress: () => {
-              setCapturedUri(null);
-              setScreen('list');
-              loadListData();
-            },
+            onPress: resetPreview,
           },
         ]);
       };
@@ -365,6 +390,9 @@ export default function ContributeScreen() {
       if (savedId && aiDetections.length > 1) {
         setLabelPicker({ obstacleId: savedId, detections: aiDetections });
         setCapturedUri(null);
+        setExifCoords(null);
+        setManualLabel('');
+        setPreviewAnalysis(null);
         setScreen('list');
         return;
       }
@@ -382,8 +410,14 @@ export default function ContributeScreen() {
     if (screen !== 'preview' || !capturedUri) return;
     setAnalyzing(true);
     setManualLabel('');
+    setPreviewAnalysis(null);
     apiAnalyzeImage(capturedUri)
       .then(result => {
+        setPreviewAnalysis({
+          aiLabel: result.aiLabel,
+          aiConfidence: result.aiConfidence,
+          aiDetections: result.aiDetections as Detection[],
+        });
         if (result.aiLabel) {
           setManualLabel(LABEL_KO[result.aiLabel] ?? result.aiLabel);
         }
@@ -395,6 +429,7 @@ export default function ContributeScreen() {
     setCapturedUri(null);
     setExifCoords(null);
     setManualLabel('');
+    setPreviewAnalysis(null);
     setScreen('list');
   };
 
@@ -766,12 +801,12 @@ export default function ContributeScreen() {
           <TouchableOpacity
             style={[styles.previewBtn, styles.saveBtn]}
             onPress={handleSave}
-            disabled={saving}
+            disabled={saving || analyzing}
           >
-            {saving ? (
+            {saving || analyzing ? (
               <>
                 <ActivityIndicator color="#fff" size="small" />
-                <Text style={styles.previewBtnText}>AI 분석 중...</Text>
+                <Text style={styles.previewBtnText}>{saving ? '저장 중...' : '분석 중...'}</Text>
               </>
             ) : (
               <>
