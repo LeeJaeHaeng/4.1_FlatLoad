@@ -212,7 +212,7 @@ export default function ContributeScreen() {
     }
 
     const result = await ImagePicker.launchImageLibraryAsync({
-      mediaTypes: ImagePicker.MediaTypeOptions.Images,
+      mediaTypes: ['images'],
       exif: true,
       quality: 0.8,
     });
@@ -222,12 +222,24 @@ export default function ContributeScreen() {
     const exif = asset.exif as Record<string, any> | undefined;
 
     if (!exif) {
+      if (Platform.OS === 'web') {
+        setExifCoords(null);
+        setCapturedUri(asset.uri);
+        setScreen('preview');
+        return;
+      }
       Alert.alert('업로드 불가', 'EXIF 데이터가 없는 사진입니다.\n카메라 앱으로 직접 촬영한 사진을 사용해주세요.');
       return;
     }
 
     const rawDate = exif.DateTimeOriginal ?? exif.DateTime;
     if (!rawDate) {
+      if (Platform.OS === 'web') {
+        setExifCoords(null);
+        setCapturedUri(asset.uri);
+        setScreen('preview');
+        return;
+      }
       Alert.alert('업로드 불가', '사진에 촬영 날짜 정보가 없습니다.\n카메라 앱으로 직접 촬영한 사진을 사용해주세요.');
       return;
     }
@@ -246,6 +258,12 @@ export default function ContributeScreen() {
     }
 
     if (exif.GPSLatitude == null || exif.GPSLongitude == null) {
+      if (Platform.OS === 'web') {
+        setExifCoords(null);
+        setCapturedUri(asset.uri);
+        setScreen('preview');
+        return;
+      }
       Alert.alert('업로드 불가', '사진에 위치 정보(GPS)가 없습니다.\n카메라 설정에서 위치 태그를 켜고 다시 촬영해주세요.');
       return;
     }

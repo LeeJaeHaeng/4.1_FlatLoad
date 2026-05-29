@@ -1,5 +1,23 @@
+import { Platform } from 'react-native';
+
 export const API_BASE_URL =
   process.env.EXPO_PUBLIC_API_BASE_URL ?? 'http://192.168.0.40:8000';
+
+async function appendPhoto(form: FormData, fieldName: string, photoUri: string): Promise<void> {
+  if (Platform.OS === 'web') {
+    const response = await fetch(photoUri);
+    const blob = await response.blob();
+    const type = blob.type || 'image/jpeg';
+    const file =
+      typeof File !== 'undefined'
+        ? new File([blob], 'obstacle.jpg', { type })
+        : blob;
+    form.append(fieldName, file as any);
+    return;
+  }
+
+  form.append(fieldName, { uri: photoUri, name: 'obstacle.jpg', type: 'image/jpeg' } as any);
+}
 
 async function apiFetch(url: string, options?: RequestInit, timeoutMs = 12000): Promise<Response> {
   const controller = new AbortController();
@@ -47,7 +65,7 @@ export async function apiCreateObstacle(
   manualLabel: string = ''
 ): Promise<ApiObstacle> {
   const form = new FormData();
-  form.append('photo', { uri: photoUri, name: 'obstacle.jpg', type: 'image/jpeg' } as any);
+  await appendPhoto(form, 'photo', photoUri);
   form.append('latitude', String(latitude));
   form.append('longitude', String(longitude));
   form.append('user_id', userId);
@@ -293,7 +311,7 @@ export async function apiAnalyzeImage(photoUri: string): Promise<{
   aiDetections: { label: string; confidence: number; bbox: [number, number, number, number] }[];
 }> {
   const form = new FormData();
-  form.append('photo', { uri: photoUri, name: 'obstacle.jpg', type: 'image/jpeg' } as any);
+  await appendPhoto(form, 'photo', photoUri);
   try {
     const res = await apiFetch(`${API_BASE_URL}/api/analyze/detect`, { method: 'POST', body: form }, 30000);
     if (!res.ok) return { aiLabel: null, aiConfidence: null, aiDetections: [] };

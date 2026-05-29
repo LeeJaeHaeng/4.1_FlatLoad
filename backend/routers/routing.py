@@ -2,6 +2,7 @@ import csv
 import json
 import math
 import os
+import tempfile
 import time
 import xml.etree.ElementTree as ET
 from pathlib import Path
@@ -73,9 +74,21 @@ def _kakao_rest_key() -> str:
 
 
 def _cache_dir() -> Path:
-    path = Path(__file__).resolve().parents[1] / "cache"
-    path.mkdir(exist_ok=True)
-    return path
+    configured = os.getenv("FACILITY_CACHE_DIR")
+    candidates = []
+    if configured:
+        candidates.append(Path(configured))
+    candidates.append(Path(__file__).resolve().parents[1] / "cache")
+    candidates.append(Path(tempfile.gettempdir()) / "flatroad-cache")
+
+    for path in candidates:
+        try:
+            path.mkdir(parents=True, exist_ok=True)
+            return path
+        except OSError:
+            continue
+
+    return Path(tempfile.gettempdir())
 
 
 def _cache_path(name: str) -> Path:
@@ -568,19 +581,24 @@ async def get_facilities(lat: float, lng: float, radius_m: int = 3000, types: st
     radius_m = max(300, min(radius_m, 10000))
 
     timeout = httpx.Timeout(25.0, connect=5.0)
+    results: list[dict] = []
     async with httpx.AsyncClient(timeout=timeout) as client:
         region_prefix = await _get_region_prefix(client, lat, lng)
-        results: list[dict] = []
 
         if "charger" in requested:
-            results.extend(await _get_chargers(client, lat, lng, radius_m, region_prefix))
+            try:
+                results.extend(await _get_chargers(client, lat, lng, radius_m, region_prefix))
+            except Exception:
+                pass
 
         disabled_types = requested & {"ramp", "elevator", "toilet", "parking"}
         service_key = _service_key()
-        if disabled_types and service_key:
+        province = region_prefix.split()[0] if region_prefix else ""
+        should_scan_public_api = bool(service_key) and (not province or province in DISABLED_FACILITY_REGION_PAGES)
+        if disabled_types and should_scan_public_api:
             try:
                 rows = await _load_disabled_region(client, region_prefix, service_key)
-            except ExternalFacilityApiError:
+            except Exception:
                 rows = []
             if rows:
                 nearby = []
@@ -599,7 +617,7 @@ async def get_facilities(lat: float, lng: float, radius_m: int = 3000, types: st
                 service_ids = [row.get("service_id", "") for _, row in candidates]
                 try:
                     eval_results = await asyncio_gather_eval_limited(client, service_key, service_ids)
-                except ExternalFacilityApiError:
+                except Exception:
                     eval_results = []
 
                 seen_results = set()

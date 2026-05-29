@@ -527,6 +527,17 @@ export default function MapScreen({ navigation }: any) {
     webViewRef.current?.injectJavaScript(`handleMessage(${JSON.stringify(message)}); true;`);
   }, []);
 
+  const showMapAlert = useCallback((title: string, message: string) => {
+    if (Platform.OS === 'web') {
+      const win = globalThis as any;
+      if (typeof win.alert === 'function') {
+        win.alert(`${title}\n\n${message}`);
+        return;
+      }
+    }
+    Alert.alert(title, message);
+  }, []);
+
   const handleMapMessageData = useCallback((data: unknown) => {
     try {
       const msg = typeof data === 'string' ? JSON.parse(data) : data as any;
@@ -970,7 +981,7 @@ export default function MapScreen({ navigation }: any) {
     }
 
     if (!location) {
-      Alert.alert('알림', '위치 정보를 가져오는 중입니다. 잠시 후 다시 시도해주세요.');
+      showMapAlert('알림', '위치 정보를 가져오는 중입니다. 잠시 후 다시 시도해주세요.');
       return;
     }
 
@@ -989,15 +1000,15 @@ export default function MapScreen({ navigation }: any) {
 
       setActiveFilters(prev => new Set([...prev, filterName]));
       if (count === 0) {
-        Alert.alert('검색 결과', `주변 ${filterName} 정보가 없습니다.`);
+        showMapAlert('검색 결과', `주변 ${filterName} 정보가 없습니다.`);
       } else {
-        Alert.alert('검색 완료', `주변 ${filterName} ${count}개를 찾았습니다.`);
+        showMapAlert('검색 완료', `주변 ${filterName} ${count}개를 찾았습니다.`);
       }
     } catch (e: any) {
       if (e?.name === 'AbortError') {
-        Alert.alert('시간 초과', '서버 응답이 너무 늦습니다. 다시 시도해주세요.');
+        showMapAlert('시간 초과', '서버 응답이 너무 늦습니다. 다시 시도해주세요.');
       } else {
-        Alert.alert('오류', `${filterName} 정보를 불러오지 못했습니다: ${e?.message ?? ''}`);
+        showMapAlert('오류', `${filterName} 정보를 불러오지 못했습니다: ${e?.message ?? ''}`);
       }
     } finally {
       setFilterLoading(null);
