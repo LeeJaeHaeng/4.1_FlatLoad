@@ -138,7 +138,7 @@ async def delete_obstacle(obstacle_id: int, reason: str = "", db: AsyncSession =
         )
         db.add(notif)
 
-    if obs.photo_url:
+    if obs.photo_url and "/uploads/" in obs.photo_url:
         filename = obs.photo_url.split("/uploads/")[-1]
         file_path = UPLOADS_DIR / filename
         if file_path.exists():
