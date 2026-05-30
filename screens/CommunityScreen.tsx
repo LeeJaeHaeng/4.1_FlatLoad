@@ -14,6 +14,10 @@ import {
   getPosts, createPost, togglePostLike, getPostLiked,
   deletePost, getComments, addComment, deleteComment,
 } from '../utils/database';
+import {
+  apiGetPosts, apiCreatePost, apiTogglePostLike, apiGetPostLiked,
+  apiDeletePost, apiGetComments, apiAddComment, apiDeleteComment,
+} from '../utils/api';
 
 type Screen = 'list' | 'create' | 'detail';
 
@@ -41,7 +45,9 @@ function PostCard({
 
   useEffect(() => {
     if (!currentUserId) return;
-    getPostLiked(post.id, currentUserId).then(setLiked);
+    apiGetPostLiked(post.id, currentUserId)
+      .then(setLiked)
+      .catch(() => getPostLiked(post.id, currentUserId).then(setLiked));
   }, [post.id, currentUserId]);
 
   const handleLike = async () => {
@@ -49,9 +55,15 @@ function PostCard({
       Alert.alert('알림', '로그인 후 좋아요를 누를 수 있습니다.');
       return;
     }
-    const result = await togglePostLike(post.id, currentUserId);
-    setLikes(result.likes);
-    setLiked(result.liked);
+    try {
+      const result = await apiTogglePostLike(post.id, currentUserId);
+      setLikes(result.likes);
+      setLiked(result.liked);
+    } catch {
+      const result = await togglePostLike(post.id, currentUserId);
+      setLikes(result.likes);
+      setLiked(result.liked);
+    }
   };
 
   const name = post.displayName || post.userEmail.split('@')[0] || '익명';
@@ -152,8 +164,13 @@ export default function CommunityScreen() {
 
   const loadPosts = async () => {
     try {
-      const data = await getPosts();
-      setPosts(data);
+      const data = await apiGetPosts();
+      setPosts(data as Post[]);
+    } catch {
+      try {
+        const data = await getPosts();
+        setPosts(data);
+      } catch {}
     } finally {
       setLoading(false);
       setRefreshing(false);
@@ -169,8 +186,13 @@ export default function CommunityScreen() {
   const loadComments = async (postId: number) => {
     setCommentLoading(true);
     try {
-      const data = await getComments(postId);
-      setComments(data);
+      const data = await apiGetComments(postId);
+      setComments(data as Comment[]);
+    } catch {
+      try {
+        const data = await getComments(postId);
+        setComments(data);
+      } catch {}
     } finally {
       setCommentLoading(false);
     }
@@ -194,8 +216,15 @@ export default function CommunityScreen() {
     setSubmitting(true);
     try {
       const certKey = await AsyncStorage.getItem('@flatroad/certified_key');
-      const isCertified = !!certKey;
-      await createPost(title.trim(), content.trim(), user.uid, user.email ?? '', user.displayName ?? '', isCertified);
+      try {
+        await apiCreatePost(
+          title.trim(), content.trim(),
+          user.uid, user.email ?? '', user.displayName ?? '',
+          certKey ?? ''
+        );
+      } catch {
+        await createPost(title.trim(), content.trim(), user.uid, user.email ?? '', user.displayName ?? '', !!certKey);
+      }
       setTitle('');
       setContent('');
       setView('list');
@@ -213,7 +242,11 @@ export default function CommunityScreen() {
         text: '삭제',
         style: 'destructive',
         onPress: async () => {
-          await deletePost(post.id);
+          try {
+            await apiDeletePost(post.id, user!.uid);
+          } catch {
+            await deletePost(post.id);
+          }
           setView('list');
           await loadPosts();
         },
@@ -226,14 +259,19 @@ export default function CommunityScreen() {
     if (!commentText.trim()) return;
     if (!selectedPost) return;
     const certKey = await AsyncStorage.getItem('@flatroad/certified_key');
-    await addComment(
-      selectedPost.id,
-      commentText.trim(),
-      user.uid,
-      user.email ?? '',
-      user.displayName ?? '',
-      !!certKey
-    );
+    try {
+      await apiAddComment(
+        selectedPost.id, commentText.trim(),
+        user.uid, user.email ?? '', user.displayName ?? '',
+        certKey ?? ''
+      );
+    } catch {
+      await addComment(
+        selectedPost.id, commentText.trim(),
+        user.uid, user.email ?? '', user.displayName ?? '',
+        !!certKey
+      );
+    }
     setCommentText('');
     loadComments(selectedPost.id);
     // commentCount 업데이트
@@ -250,7 +288,11 @@ export default function CommunityScreen() {
         text: '삭제',
         style: 'destructive',
         onPress: async () => {
-          await deleteComment(comment.id);
+          try {
+            await apiDeleteComment(comment.id, user!.uid);
+          } catch {
+            await deleteComment(comment.id);
+          }
           if (selectedPost) {
             loadComments(selectedPost.id);
             setPosts(prev =>
