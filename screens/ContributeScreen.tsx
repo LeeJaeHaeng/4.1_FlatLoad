@@ -18,6 +18,7 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { CameraView, CameraType, useCameraPermissions } from 'expo-camera';
 import * as ImagePicker from 'expo-image-picker';
+import * as exifr from 'exifr';
 import { MaterialIcons } from '@expo/vector-icons';
 import * as Location from 'expo-location';
 import { useFocusEffect } from '@react-navigation/native';
@@ -58,16 +59,75 @@ const BBOX_COLORS = [
 ];
 
 const { width: SCREEN_W } = Dimensions.get('window');
+const MAX_GALLERY_PHOTO_AGE_HOURS = 48;
 
-function parseExifDate(dateStr: string): Date | null {
+function parseExifDate(value: unknown): Date | null {
+  if (value instanceof Date && !Number.isNaN(value.getTime())) return value;
+  if (typeof value === 'number') {
+    const date = new Date(value);
+    return Number.isNaN(date.getTime()) ? null : date;
+  }
+  if (typeof value !== 'string') return null;
+  const dateStr = value.trim();
   const m = dateStr.match(/^(\d{4}):(\d{2}):(\d{2}) (\d{2}):(\d{2}):(\d{2})/);
-  if (!m) return null;
-  return new Date(`${m[1]}-${m[2]}-${m[3]}T${m[4]}:${m[5]}:${m[6]}`);
+  if (m) {
+    const parsed = new Date(`${m[1]}-${m[2]}-${m[3]}T${m[4]}:${m[5]}:${m[6]}`);
+    return Number.isNaN(parsed.getTime()) ? null : parsed;
+  }
+  const parsed = new Date(dateStr);
+  return Number.isNaN(parsed.getTime()) ? null : parsed;
 }
 
-function gpsToDecimal(value: number | number[], ref: string): number {
-  const dec = Array.isArray(value) ? value[0] + value[1] / 60 + value[2] / 3600 : value;
+function gpsToDecimal(value: number | number[] | string, ref: string = ''): number {
+  const dec = Array.isArray(value)
+    ? Number(value[0]) + Number(value[1] ?? 0) / 60 + Number(value[2] ?? 0) / 3600
+    : Number(value);
   return ref === 'S' || ref === 'W' ? -dec : dec;
+}
+
+async function readWebExif(asset: ImagePicker.ImagePickerAsset): Promise<Record<string, any> | null> {
+  if (Platform.OS !== 'web') return null;
+  try {
+    const blob = (asset as any).file instanceof Blob
+      ? (asset as any).file
+      : await fetch(asset.uri).then(res => res.blob());
+    return await exifr.parse(blob, {
+      tiff: true,
+      ifd0: true,
+      exif: true,
+      gps: true,
+      translateValues: false,
+    } as any) as Record<string, any> | null;
+  } catch {
+    return null;
+  }
+}
+
+function getTakenAtFromExif(exif: Record<string, any>): Date | null {
+  return parseExifDate(
+    exif.DateTimeOriginal ??
+    exif.CreateDate ??
+    exif.DateTimeDigitized ??
+    exif.DateTime ??
+    exif.ModifyDate
+  );
+}
+
+function getCoordsFromExif(exif: Record<string, any>): { latitude: number; longitude: number } | null {
+  const latitude = typeof exif.latitude === 'number'
+    ? exif.latitude
+    : exif.GPSLatitude == null
+      ? null
+      : gpsToDecimal(exif.GPSLatitude, exif.GPSLatitudeRef ?? 'N');
+  const longitude = typeof exif.longitude === 'number'
+    ? exif.longitude
+    : exif.GPSLongitude == null
+      ? null
+      : gpsToDecimal(exif.GPSLongitude, exif.GPSLongitudeRef ?? 'E');
+
+  if (latitude == null || longitude == null) return null;
+  if (!Number.isFinite(latitude) || !Number.isFinite(longitude)) return null;
+  return { latitude, longitude };
 }
 
 function DetectionOverlay({ detections, imgWidth, imgHeight }: {
@@ -224,59 +284,38 @@ export default function ContributeScreen() {
     if (result.canceled) return;
 
     const asset = result.assets[0];
-    const exif = asset.exif as Record<string, any> | undefined;
+    const pickerExif = asset.exif as Record<string, any> | undefined;
+    const webExif = await readWebExif(asset);
+    const exif = { ...(pickerExif ?? {}), ...(webExif ?? {}) };
+    const hasExif = Object.keys(exif).length > 0;
 
-    if (!exif) {
-      if (Platform.OS === 'web') {
-        setExifCoords(null);
-        setCapturedUri(asset.uri);
-        setScreen('preview');
-        return;
-      }
+    if (!hasExif) {
       Alert.alert('업로드 불가', 'EXIF 데이터가 없는 사진입니다.\n카메라 앱으로 직접 촬영한 사진을 사용해주세요.');
       return;
     }
 
-    const rawDate = exif.DateTimeOriginal ?? exif.DateTime;
-    if (!rawDate) {
-      if (Platform.OS === 'web') {
-        setExifCoords(null);
-        setCapturedUri(asset.uri);
-        setScreen('preview');
-        return;
-      }
+    const takenAt = getTakenAtFromExif(exif);
+    if (!takenAt) {
       Alert.alert('업로드 불가', '사진에 촬영 날짜 정보가 없습니다.\n카메라 앱으로 직접 촬영한 사진을 사용해주세요.');
       return;
     }
-    const takenAt = parseExifDate(String(rawDate));
-    if (!takenAt) {
-      Alert.alert('업로드 불가', '촬영 날짜를 읽을 수 없습니다.\n지원되지 않는 날짜 형식입니다.');
-      return;
-    }
+
     const diffHours = (Date.now() - takenAt.getTime()) / (1000 * 60 * 60);
-    if (diffHours > 48) {
+    if (diffHours < 0 || diffHours > MAX_GALLERY_PHOTO_AGE_HOURS) {
       Alert.alert(
         '업로드 불가',
-        `촬영된 지 48시간이 지난 사진입니다.\n\n촬영 시각: ${takenAt.toLocaleString('ko-KR')}\n\n최근 48시간 이내에 촬영한 사진만 업로드할 수 있습니다.`
+        `촬영된 지 ${MAX_GALLERY_PHOTO_AGE_HOURS}시간이 지난 사진이거나 촬영 시각이 올바르지 않습니다.\n\n촬영 시각: ${takenAt.toLocaleString('ko-KR')}\n\n최근 ${MAX_GALLERY_PHOTO_AGE_HOURS}시간 이내에 촬영한 사진만 업로드할 수 있습니다.`
       );
       return;
     }
 
-    if (exif.GPSLatitude == null || exif.GPSLongitude == null) {
-      if (Platform.OS === 'web') {
-        setExifCoords(null);
-        setCapturedUri(asset.uri);
-        setScreen('preview');
-        return;
-      }
+    const coords = getCoordsFromExif(exif);
+    if (!coords) {
       Alert.alert('업로드 불가', '사진에 위치 정보(GPS)가 없습니다.\n카메라 설정에서 위치 태그를 켜고 다시 촬영해주세요.');
       return;
     }
 
-    const latitude = gpsToDecimal(exif.GPSLatitude, exif.GPSLatitudeRef ?? 'N');
-    const longitude = gpsToDecimal(exif.GPSLongitude, exif.GPSLongitudeRef ?? 'E');
-
-    setExifCoords({ latitude, longitude });
+    setExifCoords(coords);
     setCapturedUri(asset.uri);
     setScreen('preview');
   };

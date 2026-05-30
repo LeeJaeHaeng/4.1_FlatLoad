@@ -58,13 +58,16 @@ const MANEUVER_LABELS: Record<number, string> = {
 const getManeuverIcon = (t: number) => MANEUVER_ICONS[t] ?? '↑';
 const getManeuverLabel = (t: number) => MANEUVER_LABELS[t] ?? '계속 직진';
 const fmtDist = (m: number) => m >= 1000 ? `${(m/1000).toFixed(1)}km` : `${Math.round(m)}m`;
-const durationToMinutes = (duration: string) => {
-  const hours = Number(duration.match(/(\d+)시간/)?.[1] ?? 0);
-  const minutes = Number(duration.match(/(\d+)분/)?.[1] ?? 0);
-  return Math.max(1, hours * 60 + minutes);
+const formatDuration = (seconds: number) => {
+  const totalMinutes = Math.max(1, Math.ceil(Math.max(0, seconds) / 60));
+  const hours = Math.floor(totalMinutes / 60);
+  const minutes = totalMinutes % 60;
+  if (hours > 0 && minutes > 0) return `${hours}시간 ${minutes}분`;
+  if (hours > 0) return `${hours}시간`;
+  return `${minutes}분`;
 };
-const formatEta = (minutesFromNow: number) => {
-  const date = new Date(Date.now() + Math.max(0, minutesFromNow) * 60_000);
+const formatEta = (secondsFromNow: number) => {
+  const date = new Date(Date.now() + Math.max(0, secondsFromNow) * 1000);
   return date.toLocaleTimeString('ko-KR', { hour: 'numeric', minute: '2-digit' });
 };
 
@@ -591,7 +594,13 @@ export default function MapScreen({ navigation }: any) {
   const [searching, setSearching] = useState(false);
   const [destination, setDestination] = useState('');
   const [destCoords, setDestCoords] = useState<{ lat: number; lng: number } | null>(null);
-  const [routeInfo, setRouteInfo] = useState<{ distance: string; duration: string; mode: 'safe' | 'normal'; obstacleCount: number } | null>(null);
+  const [routeInfo, setRouteInfo] = useState<{
+    distance: string;
+    duration: string;
+    durationSeconds: number;
+    mode: 'safe' | 'normal';
+    obstacleCount: number;
+  } | null>(null);
   const [routeLoading, setRouteLoading] = useState(false);
 
   // 실시간 내비게이션 상태
@@ -819,11 +828,9 @@ export default function MapScreen({ navigation }: any) {
         const distKm = data.trip.summary.length as number;
         const durSec = data.trip.summary.time as number;
         const distStr = distKm >= 1 ? `${distKm.toFixed(1)}km` : `${Math.round(distKm * 1000)}m`;
-        const durStr = durSec >= 3600
-          ? `${Math.floor(durSec / 3600)}시간 ${Math.floor((durSec % 3600) / 60)}분`
-          : `${Math.ceil(durSec / 60)}분`;
+        const durStr = formatDuration(durSec);
         const nearObstacles = countObstaclesNearRoute(latlngs);
-        setRouteInfo({ distance: distStr, duration: durStr, mode, obstacleCount: nearObstacles });
+        setRouteInfo({ distance: distStr, duration: durStr, durationSeconds: durSec, mode, obstacleCount: nearObstacles });
         postMapMessage({ type: 'drawRoute', coords: geoCoords, color: '#4285F4' });
 
         let parsedManeuvers: ManeuverStep[] = (leg.maneuvers ?? []).map((m: any) => ({
@@ -910,12 +917,10 @@ export default function MapScreen({ navigation }: any) {
     const dist = route.distance as number;
     const dur = route.duration as number;
     const distStr = dist >= 1000 ? `${(dist / 1000).toFixed(1)}km` : `${Math.round(dist)}m`;
-    const durStr = dur >= 3600
-      ? `${Math.floor(dur / 3600)}시간 ${Math.floor((dur % 3600) / 60)}분`
-      : `${Math.ceil(dur / 60)}분`;
+    const durStr = formatDuration(dur);
     const latlngs: [number, number][] = route.geometry.coordinates.map(([lo, la]: number[]) => [la, lo]);
     const nearObstacles = countObstaclesNearRoute(latlngs);
-    setRouteInfo({ distance: distStr, duration: durStr, mode, obstacleCount: nearObstacles });
+    setRouteInfo({ distance: distStr, duration: durStr, durationSeconds: dur, mode, obstacleCount: nearObstacles });
     postMapMessage({ type: 'drawRoute', coords: route.geometry.coordinates, color });
     if (mode === 'safe') {
       const fallbackManeuvers: ManeuverStep[] = [
@@ -1323,7 +1328,7 @@ export default function MapScreen({ navigation }: any) {
     }
     return fmtDist(total);
   })();
-  const etaText = routeInfo ? formatEta(durationToMinutes(routeInfo.duration)) : '';
+  const etaText = routeInfo ? formatEta(routeInfo.durationSeconds) : '';
 
   return (
     <View style={styles.container}>
@@ -1600,7 +1605,7 @@ export default function MapScreen({ navigation }: any) {
               </Text>
               <Text style={styles.routeTitle}>{destination}</Text>
               <Text style={styles.routeSub}>
-                {routeInfo.distance} · 약 {routeInfo.duration}
+                {routeInfo.distance} · 약 {routeInfo.duration} · {etaText} 도착
                 {routeInfo.obstacleCount > 0
                   ? ` · ⚠️ 장애물 ${routeInfo.obstacleCount}개`
                   : ' · ✅ 장애물 없음'}
