@@ -48,9 +48,20 @@ type LocationCoords = { latitude: number; longitude: number };
 const TOP_CONTRIBUTORS_CACHE_KEY = '@flatroad/cache/top-contributors';
 const MY_OBSTACLES_CACHE_PREFIX = '@flatroad/cache/my-obstacles/';
 const LIST_REFRESH_INTERVAL_MS = 60_000;
+const LIST_API_TIMEOUT_MS = 4_500;
 type Detection = { label: string; confidence: number; bbox: [number, number, number, number] };
 
 const MEDAL = ['🥇', '🥈', '🥉'];
+
+function withTimeout<T>(promise: Promise<T>, timeoutMs: number): Promise<T> {
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error('request timeout')), timeoutMs);
+    promise.then(
+      value => { clearTimeout(timer); resolve(value); },
+      error => { clearTimeout(timer); reject(error); },
+    );
+  });
+}
 const LABEL_KO: Record<string, string> = {
   person: '사람', pole: '전봇대', bollard: '볼라드', tree_trunk: '나무',
   car: '자동차', traffic_light: '신호등', truck: '트럭', bus: '버스',
@@ -257,8 +268,10 @@ export default function ContributeScreen() {
     if (!hasWarmData) setListLoading(true);
     try {
       const [obstacles, top] = await Promise.all([
-        user ? apiGetMyObstacles(user.uid).catch(() => getMyObstacles(user.uid)) : Promise.resolve([]),
-        apiGetTopContributors().catch(() => getTopContributors(3)),
+        user
+          ? withTimeout(apiGetMyObstacles(user.uid), LIST_API_TIMEOUT_MS).catch(() => getMyObstacles(user.uid))
+          : Promise.resolve([]),
+        withTimeout(apiGetTopContributors(), LIST_API_TIMEOUT_MS).catch(() => getTopContributors(3)),
       ]);
       setMyObstacles(obstacles as ObstacleRecord[]);
       setTopContributors(top as TopContributor[]);
