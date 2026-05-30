@@ -10,6 +10,7 @@ import { Gyroscope, Accelerometer, Magnetometer } from 'expo-sensors';
 import * as Speech from 'expo-speech';
 import { useFocusEffect } from '@react-navigation/native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import { getAllObstaclesWithBase64, ObstacleRecord } from '../utils/database';
 import {
   apiGetObstacles,
@@ -25,6 +26,8 @@ import { useAuth } from '../context/AuthContext';
 
 const DEFAULT_LAT = 37.5665;
 const DEFAULT_LNG = 126.9780;
+const OBSTACLE_CACHE_KEY = '@flatroad/cache/obstacles';
+const OBSTACLE_REFRESH_INTERVAL_MS = 60_000;
 
 interface ManeuverStep {
   type: number;
@@ -1150,13 +1153,50 @@ export default function MapScreen({ navigation }: any) {
     };
   }, []);
 
+  const lastObstacleFetchRef = useRef(0);
+
   useFocusEffect(
     useCallback(() => {
-      // 서버 장애물 우선, 실패 시 로컬 폴백
-      apiGetObstacles()
-        .then(list => setObstacles(list.map(o => ({ ...o, photoBase64: o.photoUri })) as any))
-        .catch(() => getAllObstaclesWithBase64().then(setObstacles).catch(console.error));
-    }, [])
+      let cancelled = false;
+
+      const applyObstacles = (list: any[]) => {
+        if (cancelled) return;
+        setObstacles(list.map(o => ({ ...o, photoBase64: o.photoBase64 ?? o.photoUri })) as any);
+      };
+
+      (async () => {
+        const now = Date.now();
+        if (now - lastObstacleFetchRef.current < OBSTACLE_REFRESH_INTERVAL_MS && obstacles.length > 0) {
+          return;
+        }
+        lastObstacleFetchRef.current = now;
+
+        let hasWarmData = obstacles.length > 0;
+        try {
+          const cached = await AsyncStorage.getItem(OBSTACLE_CACHE_KEY);
+          if (cached) {
+            const parsed = JSON.parse(cached);
+            if (Array.isArray(parsed) && parsed.length > 0) {
+              hasWarmData = true;
+              applyObstacles(parsed);
+            }
+          }
+        } catch {}
+
+        try {
+          const list = await apiGetObstacles();
+          const normalized = list.map(o => ({ ...o, photoBase64: o.photoUri }));
+          applyObstacles(normalized);
+          AsyncStorage.setItem(OBSTACLE_CACHE_KEY, JSON.stringify(normalized)).catch(() => {});
+        } catch {
+          if (!hasWarmData) {
+            getAllObstaclesWithBase64().then(applyObstacles).catch(console.error);
+          }
+        }
+      })();
+
+      return () => { cancelled = true; };
+    }, [obstacles.length])
   );
 
   useEffect(() => {

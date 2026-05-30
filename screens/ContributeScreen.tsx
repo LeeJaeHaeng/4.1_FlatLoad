@@ -43,7 +43,11 @@ import { useAuth } from '../context/AuthContext';
 import { getDetectionOverlayLayout } from '../utils/detectionOverlay';
 
 type Screen = 'list' | 'camera' | 'preview';
+type LocationCoords = { latitude: number; longitude: number };
 
+const TOP_CONTRIBUTORS_CACHE_KEY = '@flatroad/cache/top-contributors';
+const MY_OBSTACLES_CACHE_PREFIX = '@flatroad/cache/my-obstacles/';
+const LIST_REFRESH_INTERVAL_MS = 60_000;
 type Detection = { label: string; confidence: number; bbox: [number, number, number, number] };
 
 const MEDAL = ['🥇', '🥈', '🥉'];
@@ -219,8 +223,38 @@ export default function ContributeScreen() {
     AsyncStorage.setItem('settings.muteShutter', String(value));
   };
 
-  const loadListData = useCallback(async () => {
-    setListLoading(true);
+  const lastListLoadRef = useRef(0);
+
+  const loadListData = useCallback(async (force = false) => {
+    const now = Date.now();
+    if (!force && now - lastListLoadRef.current < LIST_REFRESH_INTERVAL_MS) {
+      return;
+    }
+    lastListLoadRef.current = now;
+
+    let hasWarmData = myObstacles.length > 0 || topContributors.length > 0;
+    try {
+      const [cachedMine, cachedTop] = await Promise.all([
+        user ? AsyncStorage.getItem(`${MY_OBSTACLES_CACHE_PREFIX}${user.uid}`) : Promise.resolve(null),
+        AsyncStorage.getItem(TOP_CONTRIBUTORS_CACHE_KEY),
+      ]);
+      if (cachedMine) {
+        const parsedMine = JSON.parse(cachedMine);
+        if (Array.isArray(parsedMine)) {
+          setMyObstacles(parsedMine as ObstacleRecord[]);
+          hasWarmData = true;
+        }
+      }
+      if (cachedTop) {
+        const parsedTop = JSON.parse(cachedTop);
+        if (Array.isArray(parsedTop)) {
+          setTopContributors(parsedTop as TopContributor[]);
+          hasWarmData = true;
+        }
+      }
+    } catch {}
+
+    if (!hasWarmData) setListLoading(true);
     try {
       const [obstacles, top] = await Promise.all([
         user ? apiGetMyObstacles(user.uid).catch(() => getMyObstacles(user.uid)) : Promise.resolve([]),
@@ -228,10 +262,13 @@ export default function ContributeScreen() {
       ]);
       setMyObstacles(obstacles as ObstacleRecord[]);
       setTopContributors(top as TopContributor[]);
+      const cacheWrites: [string, string][] = [[TOP_CONTRIBUTORS_CACHE_KEY, JSON.stringify(top)]];
+      if (user) cacheWrites.push([`${MY_OBSTACLES_CACHE_PREFIX}${user.uid}`, JSON.stringify(obstacles)]);
+      AsyncStorage.multiSet(cacheWrites).catch(() => {});
     } finally {
       setListLoading(false);
     }
-  }, [user]);
+  }, [myObstacles.length, topContributors.length, user]);
 
   useFocusEffect(
     useCallback(() => {
@@ -404,7 +441,7 @@ export default function ContributeScreen() {
         setManualLabel('');
         setPreviewAnalysis(null);
         setScreen('list');
-        loadListData();
+        loadListData(true);
       };
 
       const finishSave = (finalLabel: string | null, finalConf: number | null) => {
@@ -714,7 +751,7 @@ export default function ContributeScreen() {
                     await apiUpdateObstacleLabel(labelPicker.obstacleId, d.label);
                   } catch { /* 실패해도 저장은 완료된 상태 */ }
                   setLabelPicker(null);
-                  loadListData();
+                  loadListData(true);
                   const labelKo = LABEL_KO[d.label] ?? d.label;
                   Alert.alert(
                     '저장 완료',
@@ -738,7 +775,7 @@ export default function ContributeScreen() {
               style={styles.pickerSkip}
               onPress={() => {
                 setLabelPicker(null);
-                loadListData();
+                loadListData(true);
                 Alert.alert('저장 완료', '장애물 정보가 저장되었습니다.');
               }}
             >
