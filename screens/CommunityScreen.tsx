@@ -216,19 +216,32 @@ export default function CommunityScreen() {
     setSubmitting(true);
     try {
       const certKey = await AsyncStorage.getItem('@flatroad/certified_key');
+      let createdPost: Post | null = null;
       try {
-        await apiCreatePost(
+        createdPost = await apiCreatePost(
           title.trim(), content.trim(),
           user.uid, user.email ?? '', user.displayName ?? '',
           certKey ?? ''
-        );
+        ) as Post;
       } catch {
         await createPost(title.trim(), content.trim(), user.uid, user.email ?? '', user.displayName ?? '', !!certKey);
       }
       setTitle('');
       setContent('');
       setView('list');
-      await loadPosts();
+      if (createdPost) {
+        setPosts(prev => [
+          createdPost,
+          ...prev.filter(p => p.id !== createdPost.id),
+        ]);
+        setLoading(false);
+        setRefreshing(false);
+      } else {
+        const localPosts = await getPosts();
+        setPosts(localPosts);
+        setLoading(false);
+        setRefreshing(false);
+      }
     } finally {
       setSubmitting(false);
     }
