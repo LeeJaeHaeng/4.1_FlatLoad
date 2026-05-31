@@ -14,8 +14,8 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { MaterialIcons } from '@expo/vector-icons';
 import { useAuth } from '../context/AuthContext';
+import { API_BASE_URL } from '../utils/api';
 
-const API_BASE = process.env.EXPO_PUBLIC_API_BASE_URL ?? 'http://localhost:8000';
 const CERT_KEY_STORAGE = '@flatroad/certified_key';
 const CERT_INFO_STORAGE = '@flatroad/certified_info';
 
@@ -48,7 +48,7 @@ export default function MyPageScreen() {
     if (!key) return;
     setCertLoading(true);
     try {
-      const res = await fetch(`${API_BASE}/api/certified/verify`, {
+      const res = await fetch(`${API_BASE_URL}/api/certified/verify`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ api_key: key }),

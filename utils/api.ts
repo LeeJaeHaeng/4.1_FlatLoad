@@ -1,7 +1,8 @@
 import { Platform } from 'react-native';
 
+export const DEFAULT_API_BASE_URL = 'https://backend-jaehaeng2001-2614s-projects.vercel.app';
 export const API_BASE_URL =
-  process.env.EXPO_PUBLIC_API_BASE_URL ?? 'http://192.168.0.40:8000';
+  process.env.EXPO_PUBLIC_API_BASE_URL ?? DEFAULT_API_BASE_URL;
 
 async function appendPhoto(form: FormData, fieldName: string, photoUri: string): Promise<void> {
   if (Platform.OS === 'web') {
