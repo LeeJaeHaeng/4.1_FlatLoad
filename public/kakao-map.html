@@ -2,11 +2,11 @@
 <html>
 <head>
   <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <style>
     * { margin: 0; padding: 0; box-sizing: border-box; }
-    html, body { width: 100%; height: 100%; overflow: hidden; background: #edf1f5; }
-    #map { width: 100%; height: 100%; background: #edf1f5; transition: filter 220ms ease-out; }
+    html, body { width: 100%; height: 100%; overflow: hidden; background: #edf1f5; touch-action: manipulation; }
+    #map { width: 100%; height: 100%; background: #edf1f5; transition: filter 220ms ease-out; touch-action: none; }
     body.nav-mode #map { filter: saturate(1.08) contrast(1.05) brightness(0.92); }
   </style>
 </head>
@@ -18,6 +18,7 @@
       var appkey = params.get('appkey') || '';
       var initialLat = parseFloat(params.get('lat') || '37.5665');
       var initialLng = parseFloat(params.get('lng') || '126.9780');
+      var lastStatus = { type: 'mapLoading' };
       if (!Number.isFinite(initialLat)) initialLat = 37.5665;
       if (!Number.isFinite(initialLng)) initialLng = 126.9780;
 
@@ -29,13 +30,25 @@
       }
 
       function reportMapError(message) {
-        postToApp({ type: 'mapError', message: message });
+        lastStatus = { type: 'mapError', message: message };
+        postToApp(lastStatus);
       }
 
       window.onerror = function(message, source, lineno, colno, error) {
         reportMapError(error && error.message ? error.message : String(message || '지도 스크립트 오류'));
         return true;
       };
+
+      function handleStatusRequest(data) {
+        try {
+          if (typeof data !== 'string') data = JSON.stringify(data);
+          var msg = JSON.parse(data);
+          if (msg.type === 'requestStatus') postToApp(lastStatus);
+        } catch(e) {}
+      }
+
+      document.addEventListener('message', function(e) { handleStatusRequest(e.data); });
+      window.addEventListener('message', function(e) { handleStatusRequest(e.data); });
 
       if (!appkey) {
         reportMapError('EXPO_PUBLIC_KAKAO_JS_KEY가 비어 있습니다.');
@@ -80,7 +93,8 @@
               if (readySent) return;
               readySent = true;
               clearTimeout(readyTimer);
-              postToApp({ type: 'mapReady' });
+              lastStatus = { type: 'mapReady' };
+              postToApp(lastStatus);
             }
 
             function buildLocationSVG(heading, showHeading) {
@@ -284,7 +298,9 @@
               try {
                 if (typeof data !== 'string') data = JSON.stringify(data);
                 var msg = JSON.parse(data);
-                if (msg.type === 'updateLocation') {
+                if (msg.type === 'requestStatus') {
+                  postToApp(lastStatus);
+                } else if (msg.type === 'updateLocation') {
                   updateLocation(msg.lat, msg.lng, msg.accuracy);
                 } else if (msg.type === 'updateHeading') {
                   updateHeading(msg.heading);

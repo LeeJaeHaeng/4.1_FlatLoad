@@ -1,12 +1,23 @@
 import { Platform } from 'react-native';
 
 export const DEFAULT_API_BASE_URL = 'https://backend-jaehaeng2001-2614s-projects.vercel.app';
+function normalizeApiBaseUrl(value: string | undefined): string {
+  const cleaned = (value ?? '')
+    .replace(/^\uFEFF+/, '')
+    .replace(/[\r\n\t]/g, '')
+    .trim()
+    .replace(/\/+$/, '');
+  if (/^https?:\/\//i.test(cleaned)) return cleaned;
+  return DEFAULT_API_BASE_URL;
+}
+
 export const API_BASE_URL =
-  process.env.EXPO_PUBLIC_API_BASE_URL ?? DEFAULT_API_BASE_URL;
+  normalizeApiBaseUrl(process.env.EXPO_PUBLIC_API_BASE_URL);
 
 async function appendPhoto(form: FormData, fieldName: string, photoUri: string): Promise<void> {
   if (Platform.OS === 'web') {
     const response = await fetch(photoUri);
+    if (!response.ok) throw new Error('사진 파일을 읽을 수 없습니다.');
     const blob = await response.blob();
     const type = blob.type || 'image/jpeg';
     const file =
@@ -341,9 +352,9 @@ export async function apiAnalyzeImage(photoUri: string): Promise<{
   aiConfidence: number | null;
   aiDetections: { label: string; confidence: number; bbox: [number, number, number, number] }[];
 }> {
-  const form = new FormData();
-  await appendPhoto(form, 'photo', photoUri);
   try {
+    const form = new FormData();
+    await appendPhoto(form, 'photo', photoUri);
     const res = await apiFetch(`${API_BASE_URL}/api/analyze/detect`, { method: 'POST', body: form }, 30000);
     if (!res.ok) return { aiLabel: null, aiConfidence: null, aiDetections: [] };
     const data = await res.json();
@@ -360,7 +371,12 @@ export async function apiAnalyzeImage(photoUri: string): Promise<{
 export async function apiCheckAiStatus(): Promise<{ ready: boolean; classes: string[] }> {
   try {
     const res = await apiFetch(`${API_BASE_URL}/api/analyze/status`, undefined, 5000);
-    return res.json();
+    if (!res.ok) return { ready: false, classes: [] };
+    const data = await res.json();
+    return {
+      ready: !!data.ready,
+      classes: Array.isArray(data.classes) ? data.classes : [],
+    };
   } catch {
     return { ready: false, classes: [] };
   }

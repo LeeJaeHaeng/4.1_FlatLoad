@@ -1,5 +1,6 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import {
+  AppState,
   View,
   Text,
   StyleSheet,
@@ -9,10 +10,15 @@ import {
   TouchableOpacity,
   ActivityIndicator,
   Alert,
+  Linking,
+  Platform,
 } from 'react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { MaterialIcons } from '@expo/vector-icons';
+import { Camera } from 'expo-camera';
+import * as ImagePicker from 'expo-image-picker';
+import * as Location from 'expo-location';
 import { useAuth } from '../context/AuthContext';
 import { API_BASE_URL } from '../utils/api';
 
@@ -25,12 +31,132 @@ interface CertInfo {
   daysLeft: number;
 }
 
+type ManagedPermissionKey = 'camera' | 'mediaLibrary' | 'location';
+
+type PermissionSnapshot = {
+  status: string;
+  granted: boolean;
+  canAskAgain: boolean;
+  accessPrivileges?: string | null;
+  loading: boolean;
+};
+
+type PermissionResponseLike = {
+  status?: string;
+  granted?: boolean;
+  canAskAgain?: boolean;
+  accessPrivileges?: string | null;
+};
+
+const INITIAL_PERMISSION_STATE: PermissionSnapshot = {
+  status: 'undetermined',
+  granted: false,
+  canAskAgain: true,
+  loading: true,
+};
+
+const PERMISSION_ITEMS: Array<{
+  key: ManagedPermissionKey;
+  icon: React.ComponentProps<typeof MaterialIcons>['name'];
+  label: string;
+  desc: string;
+}> = [
+  {
+    key: 'camera',
+    icon: 'photo-camera',
+    label: '카메라',
+    desc: '기여 사진을 직접 촬영할 때 사용됩니다',
+  },
+  {
+    key: 'mediaLibrary',
+    icon: 'photo-library',
+    label: '갤러리',
+    desc: '기여 사진을 갤러리에서 선택할 때 사용됩니다',
+  },
+  {
+    key: 'location',
+    icon: 'my-location',
+    label: '위치',
+    desc: '지도 현재 위치와 기여 위치 저장에 사용됩니다',
+  },
+];
+
+const PERMISSION_HANDLERS: Record<ManagedPermissionKey, {
+  get: () => Promise<PermissionResponseLike>;
+  request: () => Promise<PermissionResponseLike>;
+}> = {
+  camera: {
+    get: Camera.getCameraPermissionsAsync,
+    request: Camera.requestCameraPermissionsAsync,
+  },
+  mediaLibrary: {
+    get: () => ImagePicker.getMediaLibraryPermissionsAsync(),
+    request: () => ImagePicker.requestMediaLibraryPermissionsAsync(),
+  },
+  location: {
+    get: () => Location.getForegroundPermissionsAsync(),
+    request: () => Location.requestForegroundPermissionsAsync(),
+  },
+};
+
+function normalizePermission(response: PermissionResponseLike): PermissionSnapshot {
+  const status = response.status ?? 'undetermined';
+  const granted = response.granted === true || status === 'granted' || response.accessPrivileges === 'limited';
+  return {
+    status,
+    granted,
+    canAskAgain: response.canAskAgain ?? true,
+    accessPrivileges: response.accessPrivileges ?? null,
+    loading: false,
+  };
+}
+
+function getPermissionStatusText(permission: PermissionSnapshot): string {
+  if (permission.loading) return '확인 중';
+  if (permission.accessPrivileges === 'limited') return '일부 허용';
+  if (permission.granted) return '허용됨';
+  if (permission.status === 'denied' && permission.canAskAgain === false) return '차단됨';
+  if (permission.status === 'denied') return '거부됨';
+  if (permission.status === 'unavailable') return '확인 불가';
+  return '미설정';
+}
+
 export default function MyPageScreen() {
   const { user, logout } = useAuth();
   const [muteShutter, setMuteShutter] = useState(false);
   const [certKeyInput, setCertKeyInput] = useState('');
   const [certInfo, setCertInfo] = useState<CertInfo | null>(null);
   const [certLoading, setCertLoading] = useState(false);
+  const [permissions, setPermissions] = useState<Record<ManagedPermissionKey, PermissionSnapshot>>({
+    camera: INITIAL_PERMISSION_STATE,
+    mediaLibrary: INITIAL_PERMISSION_STATE,
+    location: INITIAL_PERMISSION_STATE,
+  });
+
+  const updatePermission = useCallback((key: ManagedPermissionKey, next: Partial<PermissionSnapshot>) => {
+    setPermissions(prev => ({
+      ...prev,
+      [key]: { ...prev[key], ...next },
+    }));
+  }, []);
+
+  const refreshPermissions = useCallback(async () => {
+    await Promise.all(PERMISSION_ITEMS.map(async ({ key }) => {
+      updatePermission(key, { loading: true });
+      try {
+        const response = await PERMISSION_HANDLERS[key].get();
+        updatePermission(key, normalizePermission(response));
+      } catch {
+        updatePermission(key, {
+          status: 'unavailable',
+          granted: false,
+          canAskAgain: false,
+          accessPrivileges: null,
+          loading: false,
+        });
+      }
+    }));
+  }, [updatePermission]);
 
   useEffect(() => {
     AsyncStorage.getItem('settings.muteShutter').then((val) => {
@@ -42,6 +168,14 @@ export default function MyPageScreen() {
       }
     });
   }, []);
+
+  useEffect(() => {
+    refreshPermissions();
+    const subscription = AppState.addEventListener('change', state => {
+      if (state === 'active') refreshPermissions();
+    });
+    return () => subscription.remove();
+  }, [refreshPermissions]);
 
   const verifyCertKey = async () => {
     const key = certKeyInput.trim();
@@ -93,6 +227,47 @@ export default function MyPageScreen() {
     AsyncStorage.setItem('settings.muteShutter', String(value));
   };
 
+  const openSystemSettings = async () => {
+    if (Platform.OS === 'web') {
+      Alert.alert('설정 안내', '브라우저의 사이트 설정에서 카메라, 위치, 사진 접근 권한을 변경해주세요.');
+      return;
+    }
+    try {
+      await Linking.openSettings();
+    } catch {
+      Alert.alert('오류', '시스템 설정을 열 수 없습니다.');
+    }
+  };
+
+  const togglePermission = async (key: ManagedPermissionKey, value: boolean) => {
+    if (!value) {
+      Alert.alert('권한 해제', '앱 권한 해제는 시스템 설정에서 변경할 수 있습니다.', [
+        { text: '취소', style: 'cancel', onPress: refreshPermissions },
+        { text: '설정 열기', onPress: openSystemSettings },
+      ]);
+      return;
+    }
+
+    updatePermission(key, { loading: true });
+    try {
+      const response = await PERMISSION_HANDLERS[key].request();
+      const normalized = normalizePermission(response);
+      updatePermission(key, normalized);
+      if (!normalized.granted) {
+        const message = normalized.canAskAgain
+          ? '권한이 허용되지 않았습니다. 다시 시도하거나 시스템 설정을 확인해주세요.'
+          : '권한이 차단되어 있습니다. 시스템 설정에서 권한을 허용해주세요.';
+        Alert.alert('권한 필요', message, normalized.canAskAgain ? undefined : [
+          { text: '취소', style: 'cancel' },
+          { text: '설정 열기', onPress: openSystemSettings },
+        ]);
+      }
+    } catch {
+      updatePermission(key, { loading: false });
+      Alert.alert('오류', '권한 상태를 변경할 수 없습니다.');
+    }
+  };
+
   return (
     <SafeAreaView style={styles.container}>
       <ScrollView contentContainerStyle={styles.scroll}>
@@ -134,6 +309,41 @@ export default function MyPageScreen() {
               thumbColor="#fff"
             />
           </View>
+        </View>
+
+        <View style={styles.settingsSection}>
+          <Text style={styles.sectionTitle}>권한</Text>
+          {PERMISSION_ITEMS.map(item => {
+            const permission = permissions[item.key];
+            const enabled = permission.granted;
+            return (
+              <View key={item.key} style={styles.permissionRow}>
+                <MaterialIcons name={item.icon} size={20} color="#555" />
+                <View style={styles.settingTextWrap}>
+                  <View style={styles.permissionTitleRow}>
+                    <Text style={styles.settingLabel}>{item.label}</Text>
+                    <Text style={[
+                      styles.permissionBadge,
+                      enabled ? styles.permissionBadgeOn : styles.permissionBadgeOff,
+                    ]}>
+                      {getPermissionStatusText(permission)}
+                    </Text>
+                  </View>
+                  <Text style={styles.settingDesc}>{item.desc}</Text>
+                </View>
+                {permission.loading ? (
+                  <ActivityIndicator size="small" color="#4285F4" />
+                ) : (
+                  <Switch
+                    value={enabled}
+                    onValueChange={(value) => togglePermission(item.key, value)}
+                    trackColor={{ false: '#ddd', true: '#4285F4' }}
+                    thumbColor="#fff"
+                  />
+                )}
+              </View>
+            );
+          })}
         </View>
 
         {/* 인증 사용자 섹션 */}
@@ -300,8 +510,22 @@ const styles = StyleSheet.create({
     paddingVertical: 8,
     gap: 12,
   },
+  permissionRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingVertical: 12,
+    gap: 12,
+    borderBottomWidth: 1,
+    borderBottomColor: '#f1f3f4',
+  },
   settingTextWrap: {
     flex: 1,
+  },
+  permissionTitleRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    flexWrap: 'wrap',
+    gap: 8,
   },
   settingLabel: {
     fontSize: 15,
@@ -312,6 +536,22 @@ const styles = StyleSheet.create({
     fontSize: 12,
     color: '#aaa',
     marginTop: 2,
+  },
+  permissionBadge: {
+    paddingHorizontal: 7,
+    paddingVertical: 2,
+    borderRadius: 999,
+    fontSize: 11,
+    fontWeight: '700',
+    overflow: 'hidden',
+  },
+  permissionBadgeOn: {
+    backgroundColor: '#E6F4EA',
+    color: '#188038',
+  },
+  permissionBadgeOff: {
+    backgroundColor: '#F1F3F4',
+    color: '#777',
   },
   infoRow: {
     flexDirection: 'row',

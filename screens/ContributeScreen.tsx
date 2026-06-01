@@ -44,6 +44,8 @@ import { getDetectionOverlayLayout } from '../utils/detectionOverlay';
 
 type Screen = 'list' | 'camera' | 'preview';
 type LocationCoords = { latitude: number; longitude: number };
+type PhotoSource = 'camera' | 'gallery';
+type PickedImageAsset = ImagePicker.ImagePickerAsset & { cleanup?: () => void };
 
 const TOP_CONTRIBUTORS_CACHE_KEY = '@flatroad/cache/top-contributors';
 const MY_OBSTACLES_CACHE_PREFIX = '@flatroad/cache/my-obstacles/';
@@ -76,6 +78,15 @@ const BBOX_COLORS = [
 const { width: SCREEN_W } = Dimensions.get('window');
 const MAX_GALLERY_PHOTO_AGE_HOURS = 48;
 
+function stripStaleBlobPhoto<T extends { photoUri?: string }>(item: T): T {
+  if (typeof item.photoUri !== 'string' || !item.photoUri.startsWith('blob:')) return item;
+  return { ...item, photoUri: '' };
+}
+
+function stripStaleBlobPhotos<T extends { photoUri?: string }>(items: T[]): T[] {
+  return items.map(stripStaleBlobPhoto);
+}
+
 function parseExifDate(value: unknown): Date | null {
   if (value instanceof Date && !Number.isNaN(value.getTime())) return value;
   if (typeof value === 'number') {
@@ -103,9 +114,7 @@ function gpsToDecimal(value: number | number[] | string, ref: string = ''): numb
 async function readWebExif(asset: ImagePicker.ImagePickerAsset): Promise<Record<string, any> | null> {
   if (Platform.OS !== 'web') return null;
   try {
-    const blob = (asset as any).file instanceof Blob
-      ? (asset as any).file
-      : await fetch(asset.uri).then(res => res.blob());
+    const blob = await getWebAssetBlob(asset);
     return await exifr.parse(blob, {
       tiff: true,
       ifd0: true,
@@ -116,6 +125,91 @@ async function readWebExif(asset: ImagePicker.ImagePickerAsset): Promise<Record<
   } catch {
     return null;
   }
+}
+
+async function getWebAssetBlob(asset: ImagePicker.ImagePickerAsset): Promise<Blob> {
+  const file = (asset as any).file;
+  if (typeof Blob !== 'undefined' && file instanceof Blob) return file;
+
+  const response = await fetch(asset.uri);
+  if (!response.ok) {
+    throw new Error(`image fetch failed: ${response.status}`);
+  }
+  return response.blob();
+}
+
+function blobToDataUri(blob: Blob): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onloadend = () => {
+      typeof reader.result === 'string'
+        ? resolve(reader.result)
+        : reject(new Error('image read failed'));
+    };
+    reader.onerror = () => reject(reader.error ?? new Error('image read failed'));
+    reader.readAsDataURL(blob);
+  });
+}
+
+async function materializeImageUri(asset: ImagePicker.ImagePickerAsset): Promise<string> {
+  if (Platform.OS !== 'web' || asset.uri.startsWith('data:')) return asset.uri;
+  return blobToDataUri(await getWebAssetBlob(asset));
+}
+
+function pickWebImageAsset(): Promise<PickedImageAsset | null> {
+  if (Platform.OS !== 'web') return Promise.resolve(null);
+
+  return new Promise((resolve, reject) => {
+    const input = document.createElement('input');
+    input.type = 'file';
+    input.accept = 'image/*';
+    input.style.display = 'none';
+
+    const removeInput = () => {
+      input.onchange = null;
+      input.onerror = null;
+      input.removeEventListener('cancel', handleCancel);
+      if (input.parentNode) input.parentNode.removeChild(input);
+    };
+
+    const handleCancel = () => {
+      removeInput();
+      resolve(null);
+    };
+
+    input.onchange = () => {
+      try {
+        const file = input.files?.[0];
+        removeInput();
+        if (!file) {
+          resolve(null);
+          return;
+        }
+
+        const objectUrl = URL.createObjectURL(file);
+        resolve({
+          uri: objectUrl,
+          width: 0,
+          height: 0,
+          mimeType: file.type || 'image/jpeg',
+          fileName: file.name,
+          file,
+          cleanup: () => URL.revokeObjectURL(objectUrl),
+        } as PickedImageAsset);
+      } catch (error) {
+        removeInput();
+        reject(error);
+      }
+    };
+
+    input.onerror = () => {
+      removeInput();
+      reject(new Error('image picker failed'));
+    };
+    input.addEventListener('cancel', handleCancel);
+    document.body.appendChild(input);
+    input.click();
+  });
 }
 
 function getTakenAtFromExif(exif: Record<string, any>): Date | null {
@@ -202,6 +296,7 @@ export default function ContributeScreen() {
   const [muted, setMuted] = useState(false);
   const [capturedUri, setCapturedUri] = useState<string | null>(null);
   const [exifCoords, setExifCoords] = useState<{ latitude: number; longitude: number } | null>(null);
+  const [photoSource, setPhotoSource] = useState<PhotoSource | null>(null);
   const [manualLabel, setManualLabel] = useState('');
   const [previewAnalysis, setPreviewAnalysis] = useState<{
     aiLabel: string | null;
@@ -252,7 +347,11 @@ export default function ContributeScreen() {
       if (cachedMine) {
         const parsedMine = JSON.parse(cachedMine);
         if (Array.isArray(parsedMine)) {
-          setMyObstacles(parsedMine as ObstacleRecord[]);
+          const sanitizedMine = stripStaleBlobPhotos(parsedMine as ObstacleRecord[]);
+          setMyObstacles(sanitizedMine);
+          if (JSON.stringify(sanitizedMine) !== cachedMine) {
+            AsyncStorage.setItem(`${MY_OBSTACLES_CACHE_PREFIX}${user?.uid}`, JSON.stringify(sanitizedMine)).catch(() => {});
+          }
           hasWarmData = true;
         }
       }
@@ -273,10 +372,11 @@ export default function ContributeScreen() {
           : Promise.resolve([]),
         withTimeout(apiGetTopContributors(), LIST_API_TIMEOUT_MS).catch(() => getTopContributors(3)),
       ]);
-      setMyObstacles(obstacles as ObstacleRecord[]);
+      const sanitizedObstacles = stripStaleBlobPhotos(obstacles as ObstacleRecord[]);
+      setMyObstacles(sanitizedObstacles);
       setTopContributors(top as TopContributor[]);
       const cacheWrites: [string, string][] = [[TOP_CONTRIBUTORS_CACHE_KEY, JSON.stringify(top)]];
-      if (user) cacheWrites.push([`${MY_OBSTACLES_CACHE_PREFIX}${user.uid}`, JSON.stringify(obstacles)]);
+      if (user) cacheWrites.push([`${MY_OBSTACLES_CACHE_PREFIX}${user.uid}`, JSON.stringify(sanitizedObstacles)]);
       AsyncStorage.multiSet(cacheWrites).catch(() => {});
     } finally {
       setListLoading(false);
@@ -320,54 +420,57 @@ export default function ContributeScreen() {
 
   const pickFromGallery = async () => {
     if (!user) return;
-    const { status } = await ImagePicker.requestMediaLibraryPermissionsAsync();
-    if (status !== 'granted') {
-      Alert.alert('권한 필요', '갤러리 접근 권한이 필요합니다.');
-      return;
+    let asset: PickedImageAsset | null = null;
+    try {
+      if (Platform.OS === 'web') {
+        asset = await pickWebImageAsset();
+      } else {
+        const { status } = await ImagePicker.requestMediaLibraryPermissionsAsync();
+        if (status !== 'granted') {
+          Alert.alert('권한 필요', '갤러리 접근 권한이 필요합니다.');
+          return;
+        }
+
+        const result = await ImagePicker.launchImageLibraryAsync({
+          mediaTypes: ['images'],
+          exif: true,
+          quality: 0.8,
+        });
+        if (result.canceled) return;
+        asset = result.assets[0] as PickedImageAsset;
+      }
+      if (!asset) return;
+
+      const pickerExif = asset.exif as Record<string, any> | undefined;
+      const webExif = await readWebExif(asset);
+      const exif = { ...(pickerExif ?? {}), ...(webExif ?? {}) };
+      const hasExif = Object.keys(exif).length > 0;
+
+      if (hasExif) {
+        const takenAt = getTakenAtFromExif(exif);
+        if (takenAt) {
+          const diffHours = (Date.now() - takenAt.getTime()) / (1000 * 60 * 60);
+          if (diffHours < 0 || diffHours > MAX_GALLERY_PHOTO_AGE_HOURS) {
+            Alert.alert(
+              '업로드 불가',
+              `촬영된 지 ${MAX_GALLERY_PHOTO_AGE_HOURS}시간이 지난 사진입니다.\n\n촬영 시각: ${takenAt.toLocaleString('ko-KR')}\n\n최근 ${MAX_GALLERY_PHOTO_AGE_HOURS}시간 이내에 촬영한 사진만 업로드할 수 있습니다.`
+            );
+            return;
+          }
+        }
+      }
+
+      const coords = hasExif ? getCoordsFromExif(exif) : null;
+      const stableUri = await materializeImageUri(asset);
+      setExifCoords(coords);
+      setCapturedUri(stableUri);
+      setPhotoSource('gallery');
+      setScreen('preview');
+    } catch {
+      Alert.alert('오류', '사진을 불러오는 중 문제가 발생했습니다.\n다른 사진으로 다시 시도해주세요.');
+    } finally {
+      asset?.cleanup?.();
     }
-
-    const result = await ImagePicker.launchImageLibraryAsync({
-      mediaTypes: ['images'],
-      exif: true,
-      quality: 0.8,
-    });
-    if (result.canceled) return;
-
-    const asset = result.assets[0];
-    const pickerExif = asset.exif as Record<string, any> | undefined;
-    const webExif = await readWebExif(asset);
-    const exif = { ...(pickerExif ?? {}), ...(webExif ?? {}) };
-    const hasExif = Object.keys(exif).length > 0;
-
-    if (!hasExif) {
-      Alert.alert('업로드 불가', 'EXIF 데이터가 없는 사진입니다.\n카메라 앱으로 직접 촬영한 사진을 사용해주세요.');
-      return;
-    }
-
-    const takenAt = getTakenAtFromExif(exif);
-    if (!takenAt) {
-      Alert.alert('업로드 불가', '사진에 촬영 날짜 정보가 없습니다.\n카메라 앱으로 직접 촬영한 사진을 사용해주세요.');
-      return;
-    }
-
-    const diffHours = (Date.now() - takenAt.getTime()) / (1000 * 60 * 60);
-    if (diffHours < 0 || diffHours > MAX_GALLERY_PHOTO_AGE_HOURS) {
-      Alert.alert(
-        '업로드 불가',
-        `촬영된 지 ${MAX_GALLERY_PHOTO_AGE_HOURS}시간이 지난 사진이거나 촬영 시각이 올바르지 않습니다.\n\n촬영 시각: ${takenAt.toLocaleString('ko-KR')}\n\n최근 ${MAX_GALLERY_PHOTO_AGE_HOURS}시간 이내에 촬영한 사진만 업로드할 수 있습니다.`
-      );
-      return;
-    }
-
-    const coords = getCoordsFromExif(exif);
-    if (!coords) {
-      Alert.alert('업로드 불가', '사진에 위치 정보(GPS)가 없습니다.\n카메라 설정에서 위치 태그를 켜고 다시 촬영해주세요.');
-      return;
-    }
-
-    setExifCoords(coords);
-    setCapturedUri(asset.uri);
-    setScreen('preview');
   };
 
   const takePicture = async () => {
@@ -375,7 +478,9 @@ export default function ContributeScreen() {
     try {
       const photo = await cameraRef.current.takePictureAsync({ quality: 0.8, shutterSound: !muted });
       if (photo?.uri) {
-        setCapturedUri(photo.uri);
+        const stableUri = await materializeImageUri(photo as ImagePicker.ImagePickerAsset);
+        setCapturedUri(stableUri);
+        setPhotoSource('camera');
         setScreen('preview');
       }
     } catch {
@@ -451,6 +556,7 @@ export default function ContributeScreen() {
       const resetPreview = () => {
         setCapturedUri(null);
         setExifCoords(null);
+        setPhotoSource(null);
         setManualLabel('');
         setPreviewAnalysis(null);
         setScreen('list');
@@ -480,6 +586,7 @@ export default function ContributeScreen() {
         setLabelPicker({ obstacleId: savedId, detections: aiDetections });
         setCapturedUri(null);
         setExifCoords(null);
+        setPhotoSource(null);
         setManualLabel('');
         setPreviewAnalysis(null);
         setScreen('list');
@@ -497,11 +604,13 @@ export default function ContributeScreen() {
   // 미리보기 진입 시 AI 자동 분석
   useEffect(() => {
     if (screen !== 'preview' || !capturedUri) return;
+    let cancelled = false;
     setAnalyzing(true);
     setManualLabel('');
     setPreviewAnalysis(null);
     apiAnalyzeImage(capturedUri)
       .then(result => {
+        if (cancelled) return;
         setPreviewAnalysis({
           aiLabel: result.aiLabel,
           aiConfidence: result.aiConfidence,
@@ -511,23 +620,39 @@ export default function ContributeScreen() {
           setManualLabel(LABEL_KO[result.aiLabel] ?? result.aiLabel);
         }
       })
-      .finally(() => setAnalyzing(false));
+      .catch(() => {
+        if (!cancelled) {
+          setPreviewAnalysis({ aiLabel: null, aiConfidence: null, aiDetections: [] });
+        }
+      })
+      .finally(() => {
+        if (!cancelled) setAnalyzing(false);
+      });
+    return () => {
+      cancelled = true;
+    };
   }, [screen, capturedUri]);
 
   const handleCancel = () => {
     setCapturedUri(null);
     setExifCoords(null);
+    setPhotoSource(null);
     setManualLabel('');
     setPreviewAnalysis(null);
     setScreen('list');
   };
 
   const openDetail = (item: ObstacleRecord) => {
-    setSelectedItem(item);
+    const cleanItem = stripStaleBlobPhoto(item);
+    setSelectedItem(cleanItem);
     // 이미지 원본 비율로 표시 크기 계산
     const maxW = SCREEN_W - 48;
+    if (!cleanItem.photoUri) {
+      setDetailImgSize({ w: maxW, h: 240 });
+      return;
+    }
     Image.getSize(
-      item.photoUri,
+      cleanItem.photoUri,
       (w, h) => {
         const ratio = h / w;
         setDetailImgSize({ w: maxW, h: Math.min(maxW * ratio, 360) });
@@ -855,9 +980,9 @@ export default function ContributeScreen() {
       ) : null}
       <View style={styles.previewOverlay} />
       <SafeAreaView style={styles.previewContent}>
-        <Text style={styles.previewTitle}>{exifCoords ? '갤러리 사진' : '촬영된 사진'}</Text>
+        <Text style={styles.previewTitle}>{photoSource === 'gallery' ? '갤러리 사진' : '촬영된 사진'}</Text>
         <Text style={styles.previewSub}>
-          {exifCoords
+          {photoSource === 'gallery' && exifCoords
             ? `이 사진을 저장하시겠습니까?\n\n📍 사진의 GPS 정보로 위치가 기록됩니다.\n🤖 AI가 자동으로 장애물을 분석합니다.`
             : `이 사진을 저장하시겠습니까?\n저장 시 현재 위치와 날짜가 함께 기록되며\nAI가 자동으로 장애물을 분석합니다.`
           }

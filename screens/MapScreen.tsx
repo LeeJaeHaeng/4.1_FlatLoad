@@ -74,8 +74,27 @@ const formatEta = (secondsFromNow: number) => {
   return date.toLocaleTimeString('ko-KR', { hour: 'numeric', minute: '2-digit' });
 };
 
-const KAKAO_KEY = process.env.EXPO_PUBLIC_KAKAO_REST_KEY ?? '';
-const KAKAO_JS_KEY = process.env.EXPO_PUBLIC_KAKAO_JS_KEY ?? '';
+function cleanEnvValue(value: string | undefined): string {
+  return (value ?? '')
+    .replace(/^\uFEFF+/, '')
+    .replace(/[\r\n\t]/g, '')
+    .trim();
+}
+
+const KAKAO_KEY = cleanEnvValue(process.env.EXPO_PUBLIC_KAKAO_REST_KEY);
+const KAKAO_JS_KEY = cleanEnvValue(process.env.EXPO_PUBLIC_KAKAO_JS_KEY);
+
+function stripStaleBlobPhoto<T extends { photoUri?: string; photoBase64?: string }>(item: T): T {
+  const photoUri = typeof item.photoUri === 'string' && item.photoUri.startsWith('blob:') ? '' : item.photoUri;
+  const photoBase64 = typeof item.photoBase64 === 'string' && item.photoBase64.startsWith('blob:') ? '' : item.photoBase64;
+  if (photoUri === item.photoUri && photoBase64 === item.photoBase64) return item;
+  return { ...item, photoUri: photoUri ?? '', photoBase64: photoBase64 ?? '' };
+}
+
+function normalizeObstaclePhoto<T extends { photoUri?: string; photoBase64?: string }>(item: T): T & { photoBase64: string } {
+  const clean = stripStaleBlobPhoto(item);
+  return { ...clean, photoBase64: clean.photoBase64 ?? clean.photoUri ?? '' };
+}
 
 function speak(text: string) {
   Speech.stop();
@@ -169,6 +188,7 @@ function buildMapHTML(lat: number, lng: number): string {
 <head>
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
   <script>
+    var lastStatus = { type: 'mapLoading' };
     function postToApp(payload) {
       var message = typeof payload === 'string' ? payload : JSON.stringify(payload);
       if (window.ReactNativeWebView && typeof window.ReactNativeWebView.postMessage === 'function') {
@@ -178,12 +198,22 @@ function buildMapHTML(lat: number, lng: number): string {
       }
     }
     function reportMapError(message) {
-      postToApp({ type: 'mapError', message: message });
+      lastStatus = { type: 'mapError', message: message };
+      postToApp(lastStatus);
     }
     window.onerror = function(message, source, lineno, colno, error) {
       reportMapError(error && error.message ? error.message : String(message || '지도 스크립트 오류'));
       return true;
     };
+    function handleStatusRequest(data) {
+      try {
+        if (typeof data !== 'string') data = JSON.stringify(data);
+        var msg = JSON.parse(data);
+        if (msg.type === 'requestStatus') postToApp(lastStatus);
+      } catch(e) {}
+    }
+    document.addEventListener('message', function(e) { handleStatusRequest(e.data); });
+    window.addEventListener('message', function(e) { handleStatusRequest(e.data); });
   </script>
   <script type="text/javascript" src="https://dapi.kakao.com/v2/maps/sdk.js?appkey=${KAKAO_JS_KEY}&autoload=false" onerror="reportMapError('Kakao 지도 SDK를 불러오지 못했습니다.')"></script>
   <style>
@@ -239,7 +269,8 @@ function buildMapHTML(lat: number, lng: number): string {
       if (readySent) return;
       readySent = true;
       clearTimeout(readyTimer);
-      postToApp({ type: 'mapReady' });
+      lastStatus = { type: 'mapReady' };
+      postToApp(lastStatus);
     }
 
     function buildLocationSVG(heading, showHeading) {
@@ -446,7 +477,9 @@ function buildMapHTML(lat: number, lng: number): string {
       try {
         if (typeof data !== 'string') data = JSON.stringify(data);
         var msg = JSON.parse(data);
-        if (msg.type === 'updateLocation') {
+        if (msg.type === 'requestStatus') {
+          postToApp(lastStatus);
+        } else if (msg.type === 'updateLocation') {
           updateLocation(msg.lat, msg.lng, msg.accuracy);
         } else if (msg.type === 'updateHeading') {
           updateHeading(msg.heading);
@@ -524,6 +557,8 @@ export default function MapScreen({ navigation }: any) {
   const webFrameRef = useRef<any>(null);
   const mapHtmlRef = useRef('');
   const mapHtmlKeyRef = useRef(-1);
+  const initialMapCenterRef = useRef({ lat: DEFAULT_LAT, lng: DEFAULT_LNG });
+  const didCenterOnFirstLocationRef = useRef(false);
 
   const postMapMessage = useCallback((payload: Record<string, any>) => {
     const message = JSON.stringify(payload);
@@ -581,6 +616,14 @@ export default function MapScreen({ navigation }: any) {
     win.addEventListener?.('message', listener);
     return () => win.removeEventListener?.('message', listener);
   }, [handleMapMessageData]);
+
+  useEffect(() => {
+    if (mapReady || mapLoadError) return;
+    const timer = setTimeout(() => {
+      setMapLoadError('지도 초기화 응답이 없습니다. 네트워크와 Kakao JavaScript 키 도메인 설정을 확인하세요.');
+    }, 15000);
+    return () => clearTimeout(timer);
+  }, [mapReady, mapLoadError, mapReloadKey]);
 
   // 상보 필터 상태 refs
   const cfHeadingRef    = useRef<number | null>(null);
@@ -1161,7 +1204,7 @@ export default function MapScreen({ navigation }: any) {
 
       const applyObstacles = (list: any[]) => {
         if (cancelled) return;
-        setObstacles(list.map(o => ({ ...o, photoBase64: o.photoBase64 ?? o.photoUri })) as any);
+        setObstacles(list.map(normalizeObstaclePhoto) as any);
       };
 
       (async () => {
@@ -1178,14 +1221,18 @@ export default function MapScreen({ navigation }: any) {
             const parsed = JSON.parse(cached);
             if (Array.isArray(parsed) && parsed.length > 0) {
               hasWarmData = true;
-              applyObstacles(parsed);
+              const normalizedCached = parsed.map(normalizeObstaclePhoto);
+              applyObstacles(normalizedCached);
+              if (JSON.stringify(normalizedCached) !== cached) {
+                AsyncStorage.setItem(OBSTACLE_CACHE_KEY, JSON.stringify(normalizedCached)).catch(() => {});
+              }
             }
           }
         } catch {}
 
         try {
           const list = await apiGetObstacles();
-          const normalized = list.map(o => ({ ...o, photoBase64: o.photoUri }));
+          const normalized = list.map(normalizeObstaclePhoto);
           applyObstacles(normalized);
           AsyncStorage.setItem(OBSTACLE_CACHE_KEY, JSON.stringify(normalized)).catch(() => {});
         } catch {
@@ -1235,6 +1282,10 @@ export default function MapScreen({ navigation }: any) {
       lng: location.lng,
       accuracy: location.accuracy ?? 0,
     });
+    if (!didCenterOnFirstLocationRef.current) {
+      didCenterOnFirstLocationRef.current = true;
+      postMapMessage({ type: 'flyTo', lat: location.lat, lng: location.lng });
+    }
     navUpdateRef.current(location.lat, location.lng);
   }, [location, mapReady, postMapMessage]);
 
@@ -1319,30 +1370,14 @@ export default function MapScreen({ navigation }: any) {
     postMapMessage({ type: 'flyTo', lat: location.lat, lng: location.lng });
   };
 
-  if (loading) {
-    return (
-      <View style={styles.centered}>
-        <ActivityIndicator size="large" color="#4285F4" />
-        <Text style={styles.loadingText}>위치 정보를 가져오는 중...</Text>
-      </View>
-    );
-  }
-
-  if (errorMsg) {
-    return (
-      <View style={styles.centered}>
-        <Text style={styles.errorText}>{errorMsg}</Text>
-      </View>
-    );
-  }
-
-  const initLat = location?.lat ?? DEFAULT_LAT;
-  const initLng = location?.lng ?? DEFAULT_LNG;
+  const initLat = initialMapCenterRef.current.lat;
+  const initLng = initialMapCenterRef.current.lng;
   if (mapHtmlKeyRef.current !== mapReloadKey) {
     mapHtmlRef.current = buildMapHTML(initLat, initLng);
     mapHtmlKeyRef.current = mapReloadKey;
   }
   const mapHtml = mapHtmlRef.current;
+
   const mapUrl = `/kakao-map.html?appkey=${encodeURIComponent(KAKAO_JS_KEY)}&lat=${encodeURIComponent(String(initLat))}&lng=${encodeURIComponent(String(initLng))}&v=${mapReloadKey}`;
   const currentStep = maneuvers[currentManeuverIdx];
   const nextStep = maneuvers[currentManeuverIdx + 1];
@@ -1389,7 +1424,12 @@ export default function MapScreen({ navigation }: any) {
             height: '100%',
             border: 0,
           },
-          onLoad: () => setMapLoadError(null),
+          onLoad: () => {
+            setMapLoadError(null);
+            const win = globalThis as any;
+            win.setTimeout?.(() => postMapMessage({ type: 'requestStatus' }), 0);
+            win.setTimeout?.(() => postMapMessage({ type: 'requestStatus' }), 1000);
+          },
         })
       ) : (
         <WebView
@@ -1400,6 +1440,7 @@ export default function MapScreen({ navigation }: any) {
           originWhitelist={['*']}
           javaScriptEnabled
           domStorageEnabled
+          scalesPageToFit={false}
           onLoadStart={() => {
             setMapReady(false);
             setMapLoadError(null);
@@ -1437,6 +1478,13 @@ export default function MapScreen({ navigation }: any) {
               </>
             )}
           </View>
+        </View>
+      ) : null}
+
+      {errorMsg ? (
+        <View pointerEvents="none" style={[styles.permissionNotice, { top: insets.top + 10 }]}>
+          <MaterialIcons name="location-off" size={16} color="#8A5A00" />
+          <Text style={styles.permissionNoticeText}>{errorMsg} 기본 위치로 지도를 표시합니다.</Text>
         </View>
       ) : null}
 
@@ -1607,7 +1655,7 @@ export default function MapScreen({ navigation }: any) {
           style={styles.mapIconBtn}
           onPress={() => {
             apiGetObstacles()
-              .then(list => setObstacles(list.map(o => ({ ...o, photoBase64: o.photoUri })) as any))
+              .then(list => setObstacles(list.map(normalizeObstaclePhoto) as any))
               .catch(() => {});
           }}
           activeOpacity={0.8}
@@ -1993,6 +2041,25 @@ const styles = StyleSheet.create({
     color: '#fff',
     fontWeight: '700',
     fontSize: 13,
+  },
+  permissionNotice: {
+    position: 'absolute',
+    left: 16,
+    right: 16,
+    zIndex: 20,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    paddingHorizontal: 12,
+    paddingVertical: 9,
+    borderRadius: 14,
+    backgroundColor: 'rgba(255,245,220,0.95)',
+  },
+  permissionNoticeText: {
+    flex: 1,
+    color: '#8A5A00',
+    fontSize: 12,
+    fontWeight: '700',
   },
   centered: {
     flex: 1,

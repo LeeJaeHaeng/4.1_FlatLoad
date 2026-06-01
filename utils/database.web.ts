@@ -84,6 +84,39 @@ function nextId(rows: { id: number }[]): number {
   return rows.reduce((max, row) => Math.max(max, row.id), 0) + 1;
 }
 
+function blobToDataUrl(blob: Blob): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(typeof reader.result === 'string' ? reader.result : '');
+    reader.onerror = () => reject(reader.error);
+    reader.readAsDataURL(blob);
+  });
+}
+
+async function persistWebPhotoUri(photoUri: string): Promise<string> {
+  if (!photoUri.startsWith('blob:')) return photoUri;
+  try {
+    const response = await fetch(photoUri);
+    if (!response.ok) return '';
+    return await blobToDataUrl(await response.blob());
+  } catch {
+    return '';
+  }
+}
+
+function stripStaleBlobPhoto<T extends { photoUri?: string }>(item: T): T {
+  if (typeof item.photoUri !== 'string' || !item.photoUri.startsWith('blob:')) return item;
+  return { ...item, photoUri: '' };
+}
+
+function sanitizeObstacleRows(rows: ObstacleRecord[]): ObstacleRecord[] {
+  const sanitized = rows.map(stripStaleBlobPhoto);
+  if (JSON.stringify(sanitized) !== JSON.stringify(rows)) {
+    writeList(OBSTACLES_KEY, sanitized);
+  }
+  return sanitized;
+}
+
 export async function getDatabase(): Promise<null> {
   return null;
 }
@@ -98,9 +131,10 @@ export async function saveObstacle(
 ): Promise<number> {
   const rows = readList<ObstacleRecord>(OBSTACLES_KEY);
   const id = nextId(rows);
+  const photoUri = await persistWebPhotoUri(tempUri);
   rows.unshift({
     id,
-    photoUri: tempUri,
+    photoUri,
     latitude,
     longitude,
     createdAt: new Date().toISOString(),
@@ -115,7 +149,8 @@ export async function saveObstacle(
 }
 
 export async function getAllObstacles(): Promise<ObstacleRecord[]> {
-  return readList<ObstacleRecord>(OBSTACLES_KEY).sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+  return sanitizeObstacleRows(readList<ObstacleRecord>(OBSTACLES_KEY))
+    .sort((a, b) => b.createdAt.localeCompare(a.createdAt));
 }
 
 export async function getAllObstaclesWithBase64(): Promise<(ObstacleRecord & { photoBase64: string })[]> {
