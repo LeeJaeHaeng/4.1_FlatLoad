@@ -320,54 +320,51 @@ export default function ContributeScreen() {
 
   const pickFromGallery = async () => {
     if (!user) return;
-    const { status } = await ImagePicker.requestMediaLibraryPermissionsAsync();
-    if (status !== 'granted') {
-      Alert.alert('권한 필요', '갤러리 접근 권한이 필요합니다.');
-      return;
+    try {
+      const { status } = await ImagePicker.requestMediaLibraryPermissionsAsync();
+      if (status !== 'granted') {
+        Alert.alert('권한 필요', '갤러리 접근 권한이 필요합니다.');
+        return;
+      }
+
+      const result = await ImagePicker.launchImageLibraryAsync({
+        mediaTypes: ['images'],
+        exif: true,
+        quality: 0.8,
+      });
+      if (result.canceled) return;
+
+      const asset = result.assets[0];
+      if (!asset) return;
+
+      const pickerExif = asset.exif as Record<string, any> | undefined;
+      const webExif = await readWebExif(asset);
+      const exif = { ...(pickerExif ?? {}), ...(webExif ?? {}) };
+      const hasExif = Object.keys(exif).length > 0;
+
+      // EXIF가 있을 때만 촬영 시각 검증 (48시간 제한)
+      if (hasExif) {
+        const takenAt = getTakenAtFromExif(exif);
+        if (takenAt) {
+          const diffHours = (Date.now() - takenAt.getTime()) / (1000 * 60 * 60);
+          if (diffHours < 0 || diffHours > MAX_GALLERY_PHOTO_AGE_HOURS) {
+            Alert.alert(
+              '업로드 불가',
+              `촬영된 지 ${MAX_GALLERY_PHOTO_AGE_HOURS}시간이 지난 사진입니다.\n\n촬영 시각: ${takenAt.toLocaleString('ko-KR')}\n\n최근 ${MAX_GALLERY_PHOTO_AGE_HOURS}시간 이내에 촬영한 사진만 업로드할 수 있습니다.`
+            );
+            return;
+          }
+        }
+      }
+
+      // GPS가 있으면 사용, 없으면 handleSave에서 현재 위치로 대체 (카메라와 동일)
+      const coords = hasExif ? getCoordsFromExif(exif) : null;
+      setExifCoords(coords);
+      setCapturedUri(asset.uri);
+      setScreen('preview');
+    } catch (e) {
+      Alert.alert('오류', `사진을 불러오는 중 문제가 발생했습니다.\n${(e as Error)?.message ?? String(e)}`);
     }
-
-    const result = await ImagePicker.launchImageLibraryAsync({
-      mediaTypes: ['images'],
-      exif: true,
-      quality: 0.8,
-    });
-    if (result.canceled) return;
-
-    const asset = result.assets[0];
-    const pickerExif = asset.exif as Record<string, any> | undefined;
-    const webExif = await readWebExif(asset);
-    const exif = { ...(pickerExif ?? {}), ...(webExif ?? {}) };
-    const hasExif = Object.keys(exif).length > 0;
-
-    if (!hasExif) {
-      Alert.alert('업로드 불가', 'EXIF 데이터가 없는 사진입니다.\n카메라 앱으로 직접 촬영한 사진을 사용해주세요.');
-      return;
-    }
-
-    const takenAt = getTakenAtFromExif(exif);
-    if (!takenAt) {
-      Alert.alert('업로드 불가', '사진에 촬영 날짜 정보가 없습니다.\n카메라 앱으로 직접 촬영한 사진을 사용해주세요.');
-      return;
-    }
-
-    const diffHours = (Date.now() - takenAt.getTime()) / (1000 * 60 * 60);
-    if (diffHours < 0 || diffHours > MAX_GALLERY_PHOTO_AGE_HOURS) {
-      Alert.alert(
-        '업로드 불가',
-        `촬영된 지 ${MAX_GALLERY_PHOTO_AGE_HOURS}시간이 지난 사진이거나 촬영 시각이 올바르지 않습니다.\n\n촬영 시각: ${takenAt.toLocaleString('ko-KR')}\n\n최근 ${MAX_GALLERY_PHOTO_AGE_HOURS}시간 이내에 촬영한 사진만 업로드할 수 있습니다.`
-      );
-      return;
-    }
-
-    const coords = getCoordsFromExif(exif);
-    if (!coords) {
-      Alert.alert('업로드 불가', '사진에 위치 정보(GPS)가 없습니다.\n카메라 설정에서 위치 태그를 켜고 다시 촬영해주세요.');
-      return;
-    }
-
-    setExifCoords(coords);
-    setCapturedUri(asset.uri);
-    setScreen('preview');
   };
 
   const takePicture = async () => {
