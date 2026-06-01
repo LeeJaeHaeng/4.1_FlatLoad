@@ -1400,6 +1400,7 @@ export default function MapScreen({ navigation }: any) {
           originWhitelist={['*']}
           javaScriptEnabled
           domStorageEnabled
+          scalesPageToFit={false}
           onLoadStart={() => {
             setMapReady(false);
             setMapLoadError(null);
